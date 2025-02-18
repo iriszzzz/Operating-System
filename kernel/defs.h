@@ -6,6 +6,7 @@ struct pipe;
 struct proc;
 struct proclistnode;
 struct proclist;
+struct sortedproclist;
 struct channel;
 struct spinlock;
 struct sleeplock;
@@ -88,6 +89,7 @@ void            printfinit(void);
 int             cpuid(void);
 void            exit(int);
 int             fork(void);
+int             priorfork(int);
 int             growproc(int);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
@@ -122,6 +124,10 @@ struct proclistnode* popfrontproclist(struct proclist *pl);
 void            pushfrontproclist(struct proclist *pl, struct proclistnode *pn);
 struct proclistnode* popbackproclist(struct proclist *pl);
 void            pushbackproclist(struct proclist *pl, struct proclistnode *pn);
+// sortedproclist
+void            initsortedproclist(struct sortedproclist *spl, int (*cmp)(struct proclistnode *, struct proclistnode *));
+struct proclistnode* popsortedproclist(struct sortedproclist *spl);
+void            pushsortedproclist(struct sortedproclist *spl, struct proclistnode *pn);
 // channel
 struct channel* allocchannel(void *chan);
 struct channel* findchannel(void *chan);

@@ -96,6 +96,7 @@ struct proc {
   struct proc *parent;         // Parent process
 
   // these are private to the process, so p->lock need not be held.
+  int priority;                // Priority of the process
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
@@ -120,6 +121,15 @@ struct proclist {
   struct proclistnode buf[2]; // head and tail sentinel nodes
   struct proclistnode *head;
   struct proclistnode *tail;
+  struct spinlock lock;
+};
+
+struct sortedproclist {
+  int size;
+  struct proclistnode buf[2]; // head and tail sentinel nodes
+  struct proclistnode *head;
+  struct proclistnode *tail;
+  int (*cmp)(struct proclistnode *, struct proclistnode *);
   struct spinlock lock;
 };
 

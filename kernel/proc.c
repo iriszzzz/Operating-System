@@ -294,6 +294,61 @@ fork(void)
     return -1;
   }
 
+  np->priority = 0;
+
+  // Copy user memory from parent to child.
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  np->sz = p->sz;
+
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+
+  // Cause fork to return 0 in the child.
+  np->trapframe->a0 = 0;
+
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  release(&np->lock);
+
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+  pushreadylist(np);
+  release(&np->lock);
+
+  return pid;
+}
+
+// Fork but with a priority level for scheduling.
+int
+priorfork(int priority)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  // Allocate process.
+  if((np = allocproc()) == 0){
+    return -1;
+  }
+
+  np->priority = priority;
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -895,6 +950,65 @@ pushbackproclist(struct proclist *pl, struct proclistnode *pn)
   pn->prev = pl->tail->prev;
   pl->tail->prev->next = pn;
   pl->tail->prev = pn;
+  release(&pl->lock);
+}
+
+// initialize a sortedproclist.
+void
+initsortedproclist(struct sortedproclist *pl, int (*cmp)(struct proclistnode *, struct proclistnode *))
+{
+  int i;
+  pl->size = 0;
+  for(i = 0; i < 2; i++){
+    pl->buf[i].used = 1;
+    pl->buf[i].p = 0;
+    initlock(&pl->buf[i].lock, "sortedproclistsentinel");
+  }
+  pl->head = &pl->buf[0];
+  pl->tail = &pl->buf[1];
+  pl->head->next = pl->tail;
+  pl->head->prev = 0;
+  pl->tail->next = 0;
+  pl->tail->prev = pl->head;
+  pl->cmp = cmp;
+  initlock(&pl->lock, "sortedproclist");
+}
+
+// pop and return the first element of a sortedproclist
+// following the comparison function, or 0 if the sortedproclist is empty.
+struct proclistnode*
+popsortedproclist(struct sortedproclist *pl)
+{
+  struct proclistnode *pn;
+  acquire(&pl->lock);
+  if(pl->size == 0){
+    release(&pl->lock);
+    return 0;
+  }
+  pl->size--;
+  pn = pl->head->next;
+  pl->head->next = pn->next;
+  pn->next->prev = pl->head;
+  release(&pl->lock);
+  return pn;
+}
+
+// push an element to a sortedproclist following the comparison function.
+void
+pushsortedproclist(struct sortedproclist *pl, struct proclistnode *pn)
+{
+  struct proclistnode *pn1;
+  acquire(&pl->lock);
+  pl->size++;
+  for(pn1 = pl->head->next; pn1 != pl->tail; pn1 = pn1->next){
+    if(pl->cmp(pn, pn1) < 0){
+      break;
+    }
+  }
+  pn->next = pn1;
+  pn->prev = pn1->prev;
+  pn1->prev->next = pn;
+  pn1->prev = pn;
   release(&pl->lock);
 }
 

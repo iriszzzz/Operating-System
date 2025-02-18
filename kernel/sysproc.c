@@ -28,6 +28,15 @@ sys_fork(void)
 }
 
 uint64
+sys_priorfork(void)
+{
+  // TODO
+  int n;
+  argint(0, &n);
+  return priorfork(n);
+}
+
+uint64
 sys_wait(void)
 {
   uint64 p;
