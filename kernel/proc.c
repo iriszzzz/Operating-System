@@ -26,6 +26,11 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+struct proclistnode proclistnodes[NPROCLISTNODE];
+struct proclist readylist;
+
+struct channel channels[NCHANNEL];
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -250,6 +255,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  pushreadylist(p);
 
   release(&p->lock);
 }
@@ -320,6 +326,7 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  pushreadylist(np);
   release(&np->lock);
 
   return pid;
@@ -452,22 +459,26 @@ scheduler(void)
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-      }
-      release(&p->lock);
+    if((p = popreadylist()) == 0) {
+      // no runnable processes, waiting...
+      continue;
     }
+    acquire(&p->lock);
+    if(p->state != RUNNABLE) {
+      panic("scheduler: p->state != RUNNABLE");
+    }
+    // Switch to chosen process.  It is the process's job
+    // to release its lock and then reacquire it
+    // before jumping back to us.
+    p->state = RUNNING;
+    c->proc = p;
+    swtch(&c->context, &p->context);
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    c->proc = 0;
+
+    release(&p->lock);
   }
 }
 
@@ -505,6 +516,7 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
+  pushreadylist(p);
   sched();
   release(&p->lock);
 }
@@ -536,6 +548,8 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
+  struct channel *cn;
+  struct proclistnode *pn;
   
   // Must acquire p->lock in order to
   // change p->state and then call sched.
@@ -543,13 +557,23 @@ sleep(void *chan, struct spinlock *lk)
   // guaranteed that we won't miss any wakeup
   // (wakeup locks p->lock),
   // so it's okay to release lk.
+  // mp3: also need to acquire channel lock
 
   acquire(&p->lock);  //DOC: sleeplock1
+  if((cn = findchannel(chan)) == 0 && (cn = allocchannel(chan)) == 0) {
+    panic("sleep: allocchannel");
+  }
   release(lk);
 
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
+
+  if((pn = allocproclistnode(p)) == 0) {
+    panic("sleep: allocproclistnode");
+  }
+  pushbackproclist(&cn->pl, pn);
+  release(&cn->lock);
 
   sched();
 
@@ -567,16 +591,34 @@ void
 wakeup(void *chan)
 {
   struct proc *p;
+  struct channel *cn;
+  struct proclistnode *pn;
 
-  for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
-      acquire(&p->lock);
-      if(p->state == SLEEPING && p->chan == chan) {
-        p->state = RUNNABLE;
-      }
-      release(&p->lock);
-    }
+  if((cn = findchannel(chan)) == 0) {
+    // channel not initialized
+    return;
   }
+  while((pn = popfrontproclist(&cn->pl)) != 0){
+    p = pn->p;
+    freeproclistnode(pn);
+    acquire(&p->lock);
+    // Assertions
+    if(p == myproc()) {
+      panic("wakeup: wakeup self");
+    }
+    if(p->state != SLEEPING) {
+      panic("wakeup: not sleeping");
+    }
+    if(p->chan != chan) {
+      panic("wakeup: wrong channel");
+    }
+    p->state = RUNNABLE;
+    pushreadylist(p);
+    release(&p->lock);
+  }
+  // free channel since it is empty
+  cn->used = 0;
+  release(&cn->lock);
 }
 
 // Kill the process with the given pid.
@@ -586,6 +628,8 @@ int
 kill(int pid)
 {
   struct proc *p;
+  struct channel *cn;
+  struct proclistnode *pn;
 
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
@@ -593,7 +637,18 @@ kill(int pid)
       p->killed = 1;
       if(p->state == SLEEPING){
         // Wake process from sleep().
+        if((cn = findchannel(p->chan)) == 0) {
+          panic("kill findchannel");
+        }
+        if((pn = findproclist(&cn->pl, p)) == 0) {
+          panic("kill: findproclist");
+        }
         p->state = RUNNABLE;
+        // remove from channel and push to readylist
+        removeproclist(&cn->pl, pn);
+        freeproclistnode(pn);
+        pushreadylist(p);
+        release(&cn->lock);
       }
       release(&p->lock);
       return 0;
@@ -680,4 +735,230 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// for mp3
+// initialize process list related data structures.
+void
+proclistinit(void)
+{
+  int i;
+  // initialize proclistnodes.
+  for(i = 0; i < NPROCLISTNODE; i++){
+    proclistnodes[i].used = 0;
+    initlock(&proclistnodes[i].lock, "proclistnode");
+  }
+  // initialize readylist.
+  initproclist(&readylist);
+  // initialize channels.
+  for(i = 0; i < NCHANNEL; i++){
+    channels[i].used = 0;
+    initproclist(&channels[i].pl);
+    initlock(&channels[i].lock, "channel");
+  }
+}
+
+// allocate a proclistnode and return it.
+struct proclistnode*
+allocproclistnode(struct proc *p)
+{
+  int i;
+  struct proclistnode *pn;
+  pn = 0;
+  for(i = 0; i < NPROCLISTNODE && pn == 0; i++){
+    acquire(&proclistnodes[i].lock);
+    if(proclistnodes[i].used == 0){
+      proclistnodes[i].used = 1;
+      proclistnodes[i].p = p;
+      proclistnodes[i].next = 0;
+      proclistnodes[i].prev = 0;
+      pn = &proclistnodes[i];
+    }
+    release(&proclistnodes[i].lock);
+  }
+  return pn;
+}
+
+// free a proclistnode.
+void
+freeproclistnode(struct proclistnode *pn)
+{
+  acquire(&pn->lock);
+  pn->used = 0;
+  release(&pn->lock);
+}
+
+// initialize a proclist.
+void
+initproclist(struct proclist *pl)
+{
+  int i;
+  pl->size = 0;
+  for(i = 0; i < 2; i++){
+    pl->buf[i].used = 1;
+    pl->buf[i].p = 0;
+    initlock(&pl->buf[i].lock, "proclistsentinel");
+  }
+  pl->head = &pl->buf[0];
+  pl->tail = &pl->buf[1];
+  pl->head->next = pl->tail;
+  pl->head->prev = 0;
+  pl->tail->next = 0;
+  pl->tail->prev = pl->head;
+  initlock(&pl->lock, "proclist");
+}
+
+// find a proclistnode in a proclist.
+struct proclistnode*
+findproclist(struct proclist *pl, struct proc *p)
+{
+  struct proclistnode *tmp, *pn;
+  acquire(&pl->lock);
+  pn = 0;
+  for(tmp = pl->head->next; tmp != pl->tail && pn == 0; tmp = tmp->next){
+    if(tmp->p == p){
+      pn = tmp;
+    }
+  }
+  release(&pl->lock);
+  return pn;
+}
+
+// remove a proclistnode from a proclist.
+void
+removeproclist(struct proclist *pl, struct proclistnode *pn)
+{
+  acquire(&pl->lock);
+  pl->size--;
+  pn->prev->next = pn->next;
+  pn->next->prev = pn->prev;
+  release(&pl->lock);
+}
+
+// pop and return the first element of a proclist, or 0 if the proclist is empty.
+struct proclistnode*
+popfrontproclist(struct proclist *pl)
+{
+  struct proclistnode *pn;
+  acquire(&pl->lock);
+  if(pl->size == 0){
+    release(&pl->lock);
+    return 0;
+  }
+  pl->size--;
+  pn = pl->head->next;
+  pl->head->next = pn->next;
+  pn->next->prev = pl->head;
+  release(&pl->lock);
+  return pn;
+}
+
+// push an element to the front of a proclist.
+void
+pushfrontproclist(struct proclist *pl, struct proclistnode *pn)
+{
+  acquire(&pl->lock);
+  pl->size++;
+  pn->next = pl->head->next;
+  pn->prev = pl->head;
+  pl->head->next->prev = pn;
+  pl->head->next = pn;
+  release(&pl->lock);
+}
+
+// pop and return the last element of a proclist, or 0 if the proclist is empty.
+struct proclistnode*
+popbackproclist(struct proclist *pl)
+{
+  struct proclistnode *pn;
+  acquire(&pl->lock);
+  if(pl->size == 0){
+    release(&pl->lock);
+    return 0;
+  }
+  pl->size--;
+  pn = pl->tail->prev;
+  pl->tail->prev = pn->prev;
+  pn->prev->next = pl->tail;
+  release(&pl->lock);
+  return pn;
+}
+
+
+// push an element to the back of a proclist.
+void
+pushbackproclist(struct proclist *pl, struct proclistnode *pn)
+{
+  acquire(&pl->lock);
+  pl->size++;
+  pn->next = pl->tail;
+  pn->prev = pl->tail->prev;
+  pl->tail->prev->next = pn;
+  pl->tail->prev = pn;
+  release(&pl->lock);
+}
+
+// allocate a channel, lock and return if available,
+// or return 0 if no entry is left.
+struct channel*
+allocchannel(void *chan)
+{
+  int i;
+  struct channel *cn;
+  cn = 0;
+  for(i = 0; i < NCHANNEL && cn == 0; i++){
+    acquire(&channels[i].lock);
+    if(channels[i].used == 0){
+      channels[i].used = 1;
+      channels[i].chan = chan;
+      cn = &channels[i];
+    }else{
+      release(&channels[i].lock);
+    }
+  }
+  return cn;
+}
+
+// find a channel, lock and return if found,
+// or return 0 if not found.
+struct channel*
+findchannel(void *chan)
+{
+  int i;
+  struct channel *cn;
+  cn = 0;
+  for(i = 0; i < NCHANNEL && cn == 0; i++){
+    acquire(&channels[i].lock);
+    if(channels[i].used == 1 && channels[i].chan == chan){
+      cn = &channels[i];
+    }else{
+      release(&channels[i].lock);
+    }
+  }
+  return cn;
+}
+
+// scheduler managed, push to ready list
+void
+pushreadylist(struct proc *p)
+{
+  struct proclistnode *pn;
+  if((pn = allocproclistnode(p)) == 0) {
+    panic("pushreadylist: allocproclistnode");
+  }
+  pushbackproclist(&readylist, pn);
+}
+
+// scheduler managed, pop from ready list
+struct proc*
+popreadylist()
+{
+  struct proc *p;
+  struct proclistnode *pn;
+  if((pn = popfrontproclist(&readylist)) == 0) {
+    return 0; // no runnable processes
+  }
+  p = pn->p;
+  freeproclistnode(pn);
+  return p;
 }

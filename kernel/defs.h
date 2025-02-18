@@ -4,6 +4,9 @@ struct file;
 struct inode;
 struct pipe;
 struct proc;
+struct proclistnode;
+struct proclist;
+struct channel;
 struct spinlock;
 struct sleeplock;
 struct stat;
@@ -106,6 +109,25 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+// for mp3
+void            proclistinit(void);
+// proclistnode
+struct proclistnode* allocproclistnode(struct proc *p);
+void            freeproclistnode(struct proclistnode *pn);
+// proclist
+void            initproclist(struct proclist *pl);
+struct proclistnode* findproclist(struct proclist *pl, struct proc *p);
+void            removeproclist(struct proclist *pl, struct proclistnode *pn);
+struct proclistnode* popfrontproclist(struct proclist *pl);
+void            pushfrontproclist(struct proclist *pl, struct proclistnode *pn);
+struct proclistnode* popbackproclist(struct proclist *pl);
+void            pushbackproclist(struct proclist *pl, struct proclistnode *pn);
+// channel
+struct channel* allocchannel(void *chan);
+struct channel* findchannel(void *chan);
+// scheduler managed
+void            pushreadylist(struct proc *pn);
+struct proc*    popreadylist();
 
 // swtch.S
 void            swtch(struct context*, struct context*);

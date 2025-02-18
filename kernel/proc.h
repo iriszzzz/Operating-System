@@ -105,3 +105,27 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+
+// for mp3
+struct proclistnode {
+  int used;
+  struct proc *p;
+  struct proclistnode *next;
+  struct proclistnode *prev;
+  struct spinlock lock;
+};
+
+struct proclist {
+  int size;
+  struct proclistnode buf[2]; // head and tail sentinel nodes
+  struct proclistnode *head;
+  struct proclistnode *tail;
+  struct spinlock lock;
+};
+
+struct channel {
+  int used;
+  void *chan;
+  struct proclist pl;
+  struct spinlock lock;
+};
