@@ -124,6 +124,7 @@ Aging:
 4. Bonus (5%)
    - Refer to section "Rule for bonus" in [student guide](https://git.lsalab.cs.nthu.edu.tw/os25/os25_shared_xv6/src/branch/student/)
    - Write the bonus testcase script in `grade-mp2-bonus`.
+   - Testcase for mp2 is more complicated, read `grade-mp2-public` once again before you start.
 5. Plagiarism check
    - Never show your code to others.
    - If your code is found to be similar to others, including sources from the internet, and you cannot answer questions properly about your code during the demo, you will be considered as plagiarizing and will receive a score of 0 for the assignment.
