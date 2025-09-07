@@ -17,7 +17,7 @@ In mp2, we have modified the original xv6-riscv
 
 ### Instructions
 
-- Refer to link [student guide](https://github.com/NTHU-LSALAB/xv6-Template/tree/student) to launch the development environment.
+- Refer to link [student guide](https://git.lsalab.cs.nthu.edu.tw/os25/os25_shared_xv6/src/branch/student/) to launch the development environment.
 
 ## Trace Code
 
@@ -112,7 +112,7 @@ Aging:
    - Correctness of multilevel feedback queue scheduling
    - Correctness of aging
    - Correctness of preemption
-   - Passing all public testcases gets (60% * 70% = 42%)
+   - Passing all public testcases gets (60% * 70% = 42%). The test case will be same as `./grade-mp2-public`.
    - Passing the remaining private testcases gets the rest (60% * 30% = 18%)
 2. Report (20%)
    - Section including team members, team member contribution.
@@ -120,9 +120,10 @@ Aging:
    - Section explaining your implementation.
    - Write the report in `mp2-report.md`.
 3. Demo (20%)
-   - Answer questions from TAs in 20 minutes.
+   - You will have a 20-minute session answering TA questions regarding your implementation and specific details of the trace code.
 4. Bonus (5%)
-   - Refer to section "Rule for bonus" in [student guide](https://github.com/NTHU-LSALAB/xv6-Template/tree/student)
+   - Refer to section "Rule for bonus" in [student guide](https://git.lsalab.cs.nthu.edu.tw/os25/os25_shared_xv6/src/branch/student/)
+   - Write the bonus testcase script in `grade-mp2-bonus`.
 5. Plagiarism check
    - Never show your code to others.
    - If your code is found to be similar to others, including sources from the internet, and you cannot answer questions properly about your code during the demo, you will be considered as plagiarizing and will receive a score of 0 for the assignment.
