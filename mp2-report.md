@@ -8,47 +8,85 @@
 
 ### 1. `kernel/kernelvec.S:timervec`
  - Setup timer interrupt
-  > `timerinit` -> `kernel/kernelvec.S:timervec`
+ - `timerinit` -> `kernel/kernelvec.S:timervec`
+ - 是 RISC-V 的 machine-mode timer interrupt handler，負責設定下一次中斷的時間，然後轉交控制權給 xv6 的 S-mode。
+   > 當 CPU 從某個模式跳到另一個模式時（例如 user → kernel、或 machine → supervisor），
+暫存器的內容會被破壞，但我們又需要先暫存一些值\
+   > `sscratch`: S-mode 暫存暫存器\
+   > `mscratch`: U-mode 暫存暫存器
+
 
    ```asm
    .globl timervec
    .align 4
    timervec:
+   ```
+  - 宣告全域標籤 timervec，4 位元組對齊。這是硬體在 machine mode timer interrupt 時跳入的入口。
+    ```asm
     # start.c has set up the memory that mscratch points to:
     # scratch[0,8,16] : register save area.
     # scratch[24] : address of CLINT's MTIMECMP register.
     # scratch[32] : desired interval between interrupts.
-    
+    ```
+  - 在 start.c 啟動時，xv6 會設定 mscratch 指向一個暫存區：
+    ```asm
     csrrw a0, mscratch, a0
     sd a1, 0(a0)
     sd a2, 8(a0)
     sd a3, 16(a0)
+    ```
 
-    # schedule the next timer interrupt
-    # by adding interval to mtimecmp.
-    ld a1, 24(a0) # CLINT_MTIMECMP(hart)
-    ld a2, 32(a0) # interval
-    ld a3, 0(a1)
-    add a3, a3, a2
-    sd a3, 0(a1)
+   - `csrrw` : `CSR Read and Write` 從 CSR（控制暫存器）讀一個值、同時把新值寫回去。
+     > 取得 mscratch 裡儲存的 scratch 區基址（給 a0 用）
+同時暫存目前的 a0 值（放回 mscratch），以免 a0 被破壞
+   - CSR : 
+     - sstatus：狀態暫存器（S-mode 版）
+     - sepc : 儲存 trap 前的 PC，回到 user mode 時要從這裡繼續（usertrapret 寫回）
+     - stvec : Trap 入口點位址，指定中斷發生時跳去哪（設成 uservec 或 kernelvec）
+     - sscratch：暫存暫存器（S-mode），存放 user stack pointer（在 trampoline.S 用）。
+     - satp：Page table 根指標，控制虛擬記憶體（切換 user/kernel page table）
+     - sie：Interrupt Enable，哪些中斷允許（timer、software、external）
+     - sip：Interrupt Pending，哪些中斷正在等待處理（bit1=SSIP）
+     - scause：為什麼 CPU 進入 trap」（例如外部中斷、timer、syscall...）
+     - mstatus：Machine 狀態暫存器，M-mode 的版本，比 sstatus 權限更高
+     - mie
+     - mip
+     - mtvec：M-mode Trap 向量位址，設定 machine trap 入口（例如 timervec）
+     - mscratch：暫存暫存器（M-mode），在 timervec 裡暫存暫存器內容
 
-    # arrange for a supervisor software interrupt
-    # after this handler returns.
-    li a1, 2
-    csrw sip, a1
-
-    ld a3, 16(a0)
-    ld a2, 8(a0)
-    ld a1, 0(a0)
-    csrrw a0, mscratch, a0
-
-    mret
-   ```
+     ```asm 
+     # schedule the next timer interrupt
+     # by adding interval to mtimecmp.
+     ld a1, 24(a0) # CLINT_MTIMECMP(hart)
+     ld a2, 32(a0) # interval
+     ld a3, 0(a1)  # 取出目前的 mtimecmp ： 「下次中斷的時間點」
+     add a3, a3, a2 # 加上間隔值，得到下一次觸發時間
+     sd a3, 0(a1) # 寫回 mtimecmp
+ 
+     # arrange for a supervisor software interrupt
+     # after this handler returns.
+     li a1, 2 # 把常數 2 載入 a1，表示要設定 bit 1 = 1（二進位）。
+     csrw sip, a1 # Write to CSR，寫進指定的控制暫存器（這裡是 sip）
+     #「我這邊（machine mode）已經處理完下一次時間設定，請作業系統（S-mode）等會處理 supervisor interrupt。」
+ 
+     ld a3, 16(a0)
+     ld a2, 8(a0)
+     ld a1, 0(a0)
+     csrrw a0, mscratch, a0 # 把原本的 a0 值放回
+ 
+     mret # 從 machine mode 回到觸發前的模式
+     ```
 
 
 ### 2. `kernel/trampoline.S:uservec`
- - User space interrupt handler
-  > `usertrapret` -> `kernel/trampoline.S:uservec` -> `usertrap` -> `devintr` -> `clockintr`
+ - User space interrupt handler `為什麼要分 user 與 kernel handler`
+ - `usertrapret` -> `kernel/trampoline.S:uservec` -> `usertrap` -> `devintr` -> `clockintr`
+ - 前言：怎麼到`usertrapret`？
+   > `usertrap()`裡最後會呼叫`usertrapret`，而每次進入`trampoline.S`裡的`uservec`都在結尾跳入`usertrap()`\
+   > 每次在usertrap裡執行完任務後，回 user mode 前都會執行一次 usertrapret()，它會設定下次中斷時該跳回 uservec。\
+   > 從上次設好的返回點（usertrapret）開始，
+中斷發生 → 進 uservec → usertrap → devintr → clockintr → 再回 usertrapret
+
    ```c
    //
    // return to user space
@@ -66,6 +104,12 @@
      // send syscalls, interrupts, and exceptions to uservec in    trampoline.S
      uint64 trampoline_uservec = TRAMPOLINE + (uservec -    trampoline);
      w_stvec(trampoline_uservec);
+   ```
+ - `TRAMPOLINE` 是一個固定高位址，`uservec - trampoline` 是在計算出組譯時 uservec 在 trampoline 裡的相對位移，加上 TRAMPOLINE（整塊放到記憶體的起點），就得到 uservec 的實際執行位址。
+ - `w_stvec` 把這個位址寫入 stvec。
+
+
+   ```c
    
      // set up trapframe values that uservec will need when
      // the process next traps into the kernel.
@@ -187,10 +231,6 @@
 
    ```
    ```c
-   //
-   // handle an interrupt, exception, or system call from user    space.
-   // called from trampoline.S
-   //
    void
    usertrap(void)
    {
@@ -199,23 +239,17 @@
      if((r_sstatus() & SSTATUS_SPP) != 0)
        panic("usertrap: not from user mode");
    
-     // send interrupts and exceptions to kerneltrap(),
-     // since we're now in the kernel.
      w_stvec((uint64)kernelvec);
    
      struct proc *p = myproc();
      
-     // save user program counter.
      p->trapframe->epc = r_sepc();
      
-     if(r_scause() == 8){
-       // system call
+     if(r_scause() == 8){// system call
    
        if(killed(p))
          exit(-1);
    
-       // sepc points to the ecall instruction,
-       // but we want to return to the next instruction.
        p->trapframe->epc += 4;
    
        // an interrupt will change sepc, scause, and sstatus,
@@ -292,17 +326,22 @@
      }
    }
    ```
-
-   ```c
-   void
-   clockintr()
-   {
-     acquire(&tickslock);
-     ticks++;
-     wakeup(&ticks);
-     release(&tickslock);
-   }
-   ```
+  - devintr() 回傳值代表中斷類型：0 / 2 / 1
+    ```c
+    void
+    clockintr()
+    {
+      acquire(&tickslock);
+      ticks++;
+      wakeup(&ticks);
+      release(&tickslock);
+    }
+    ```
+   - `clockintr()`：更新時間與喚醒睡眠程式
+     > ticks 是全域變數（系統時鐘計數）。\
+每次 timer 中斷 → ticks++。\
+有些程式在睡眠時會呼叫 sleep(&ticks, ...)，\
+→ 當 wakeup(&ticks) 執行時，那些睡在 &ticks 上的程式會被喚醒。
 
 ### 3. `kernel/kernelvec.S:kernelvec`
  - Kernel space interrupt handler
@@ -491,39 +530,15 @@
 
 
 ### 4. `kernel/proc.h`
- -
-  >
+ -  mapping relationship of kernel/proc.h enum procstate to the process states ("New", "Ready", "Running", "Waiting", "Terminated").
+ 
    ```c
    enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
    ```
-
-   > `kernel/proc.c`
-   ```c
-   // for mp2
-   char*
-   procstate2str(enum procstate state)
-   {
-   switch(state) {
-       case USED:     return "new";
-       case SLEEPING: return "waiting";
-       case RUNNABLE: return "ready";
-       case RUNNING:  return "running";
-       case UNUSED:   return "exit";
-       case ZOMBIE:   return "exit";
-       default:  return "unknown";
-   }
-   }
-   ```
-
-
-   ```c
-   void
-   pushreadylist(struct proc *p)
-   {
-     struct proclistnode *pn;
-     if((pn = allocproclistnode(p)) == 0) {
-       panic("pushreadylist: allocproclistnode");
-     }
-     pushbackproclist(&readylist, pn);
-   }
-   ```
+- mapping
+    - UNUSED
+    - USED -> New
+    - SLEEPING -> Waiting
+    - RUNNABLE -> Ready
+    - RUNNING -> Running
+    - ZOMBIE -> Terminated
