@@ -252,6 +252,7 @@
      usertrapret();
    }
    ```
+   <a id="devintr"></a>
    ```c
    // check if it's an external interrupt or software interrupt,
    // and handle it.
@@ -304,6 +305,7 @@
    }
    ```
   - devintr() 回傳值代表中斷類型：0 / 2 / 1
+    <a id="clockintr"></a>
     ```c
     void
     clockintr()
@@ -401,7 +403,7 @@
      w_sstatus(sstatus);
    }
    ```
-
+  - [devintr](#devintr)
    ```c
    extern int devintr();
 
@@ -450,7 +452,7 @@
      }
     }
    ```
-
+  - [clockintr()](#clockintr)
    ```c
    void
    clockintr()
