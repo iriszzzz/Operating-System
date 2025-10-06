@@ -6,6 +6,25 @@
 
 ## Trace Code
 
+- CSR （控制暫存器）: 
+     - sstatus：狀態暫存器（S-mode 版）
+     - sepc : 儲存 trap 前的 PC，回到 user mode 時要從這裡繼續（usertrapret 寫回）
+     - stvec : Trap 入口點位址，指定中斷發生時跳去哪（設成 uservec 或 kernelvec）
+     - sscratch：暫存暫存器（S-mode），存放 user stack pointer（在 trampoline.S 用）。
+     - satp：Page table 根指標，控制虛擬記憶體（切換 user/kernel page table）
+     - sie：Interrupt Enable，哪些中斷允許（timer、software、external）
+     - sip：Interrupt Pending，哪些中斷正在等待處理（bit1=SSIP），每一個 bit 代表不同類型的中斷是否「掛起」（正在等待被處理）：
+       > 0：USIP，使用者模式軟體中斷\
+       > 1：SSIP，主管（Supervisor）模式軟體中斷，sip裡的一個位元（bit 1）。\
+       > 5：STIP，定時器中斷（Timer interrupt）\
+       > 9：SEIP，外部裝置中斷（External interrupt）
+     - scause：為什麼 CPU 進入 trap」（例如外部中斷、timer、syscall...）
+     - mstatus：Machine 狀態暫存器，M-mode 的版本，比 sstatus 權限更高
+     - mie：Machine Interrupt Enable，M-mode 開關各種中斷
+     - mip：Machine Interrupt Pending，M-mode 正在等待的中斷
+     - mtvec：M-mode Trap 向量位址，設定 machine trap 入口（例如 timervec）
+     - mscratch：暫存暫存器（M-mode），在 timervec 裡暫存暫存器內容
+
 ### 1. `kernel/kernelvec.S:timervec`
  - Setup timer interrupt
  - `timerinit` -> `kernel/kernelvec.S:timervec`
@@ -39,20 +58,7 @@
    - `csrrw` : `CSR Read and Write` 從 CSR（控制暫存器）讀一個值、同時把新值寫回去。
      > 取得 mscratch 裡儲存的 scratch 區基址（給 a0 用）
 同時暫存目前的 a0 值（放回 mscratch），以免 a0 被破壞
-   - CSR : 
-     - sstatus：狀態暫存器（S-mode 版）
-     - sepc : 儲存 trap 前的 PC，回到 user mode 時要從這裡繼續（usertrapret 寫回）
-     - stvec : Trap 入口點位址，指定中斷發生時跳去哪（設成 uservec 或 kernelvec）
-     - sscratch：暫存暫存器（S-mode），存放 user stack pointer（在 trampoline.S 用）。
-     - satp：Page table 根指標，控制虛擬記憶體（切換 user/kernel page table）
-     - sie：Interrupt Enable，哪些中斷允許（timer、software、external）
-     - sip：Interrupt Pending，哪些中斷正在等待處理（bit1=SSIP）
-     - scause：為什麼 CPU 進入 trap」（例如外部中斷、timer、syscall...）
-     - mstatus：Machine 狀態暫存器，M-mode 的版本，比 sstatus 權限更高
-     - mie
-     - mip
-     - mtvec：M-mode Trap 向量位址，設定 machine trap 入口（例如 timervec）
-     - mscratch：暫存暫存器（M-mode），在 timervec 裡暫存暫存器內容
+  
 
      ```asm 
      # schedule the next timer interrupt
@@ -81,6 +87,7 @@
 ### 2. `kernel/trampoline.S:uservec`
  - User space interrupt handler `為什麼要分 user 與 kernel handler`
  - `usertrapret` -> `kernel/trampoline.S:uservec` -> `usertrap` -> `devintr` -> `clockintr`
+#### I. `usertrapret`
  - 前言：怎麼到`usertrapret`？
    > `usertrap()`裡最後會呼叫`usertrapret`，而每次進入`trampoline.S`裡的`uservec`都在結尾跳入`usertrap()`\
    > 每次在usertrap裡執行完任務後，回 user mode 前都會執行一次 usertrapret()，它會設定下次中斷時該跳回 uservec。\
@@ -96,9 +103,6 @@
    {
      struct proc *p = myproc();
    
-     // we're about to switch the destination of traps from
-     // kerneltrap() to usertrap(), so turn off interrupts until
-     // we're back in user space, where usertrap() is correct.
      intr_off();
    
      // send syscalls, interrupts, and exceptions to uservec in    trampoline.S
@@ -140,7 +144,7 @@
      ((void (*)(uint64))trampoline_userret)(satp);
    }
    ```
-
+#### II. `kernel/trampoline.S:uservec`
    ```asm
    #include "riscv.h"
    #include "memlayout.h"
@@ -151,7 +155,7 @@
    .align 4
    .globl uservec
    uservec:    
-       #
+    #
     # trap.c sets stvec to point here, so
     # traps from user space start here,
     # in supervisor mode, but with a
@@ -180,18 +184,13 @@
     csrr t0, sscratch
     sd t0, 112(a0)
 
-    # initialize kernel stack pointer, from p->trapframe->kernel_sp
-    ld sp, 8(a0)
+    ld sp, 8(a0) # initialize kernel stack pointer
 
-    # make tp hold the current hartid, from p->trapframe->kernel_hartid
-    ld tp, 32(a0)
+    ld tp, 32(a0) # make tp hold the current hartid,
 
-    # load the address of usertrap(), from p->trapframe->kernel_trap
-    ld t0, 16(a0)
+    ld t0, 16(a0) # load the address of usertrap()
 
-
-    # fetch the kernel page table address, from p->trapframe->kernel_satp.
-    ld t1, 0(a0)
+    ld t1, 0(a0) # fetch the kernel page table address, 
 
     # wait for any previous memory operations to complete, so that
     # they use the user page table.
@@ -203,10 +202,11 @@
     # flush now-stale user entries from the TLB.
     sfence.vma zero, zero
 
-    # jump to usertrap(), which does not return
-    jr t0
+    jr t0 # jump to usertrap()
 
    ```
+#### III. `usertrap`
+
    ```c
    void
    usertrap(void)
@@ -252,13 +252,9 @@
      usertrapret();
    }
    ```
-   <a id="devintr"></a>
+  #### IX. `devintr`
    ```c
    // check if it's an external interrupt or software interrupt,
-   // and handle it.
-   // returns 2 if timer interrupt,
-   // 1 if other device,
-   // 0 if not recognized.
    int
    devintr()
    {
@@ -296,7 +292,7 @@
        
        // acknowledge the software interrupt by clearing
        // the SSIP bit in sip.
-       w_sip(r_sip() & ~2);
+       w_sip(r_sip() & ~2); //r_sip() 讀出目前 sip 的值，& ~2 把第 1 bit（SSIP）清成 0 ，w_sip(...) 寫回 sip → 表示我們已經處理完中斷
    
        return 2;
      } else {
@@ -304,23 +300,41 @@
      }
    }
    ```
-  - devintr() 回傳值代表中斷類型：0 / 2 / 1
-    <a id="clockintr"></a>
-    ```c
-    void
-    clockintr()
-    {
-      acquire(&tickslock);
-      ticks++;
-      wakeup(&ticks);
-      release(&tickslock);
-    }
-    ```
+  - devintr() 回傳值代表中斷類型：0（not recognized） / 2（timer interrupt） / 1（other device,）
+  - `PLIC`：Platform-Level Interrupt Controller，負責「管理外部中斷」的硬體控制器。\
+  - CPU 可能會同時接收到很多外部裝置的中斷（像 UART、磁碟、網路卡），
+但 CPU 自己沒辦法知道是哪個外設發的。
+這時就由 PLIC 來幫忙「統一收集、排隊、分發」這些中斷訊號。
+  - `irq`：Interrupt Request，每個外部裝置（像 UART、磁碟、網卡）
+都會被分配一個 中斷編號（irq number）。當裝置要通知 CPU「我有事要你處理」時，透過這個編號向 PLIC 發出中斷請求。
+#### IV. `clockintr`
    - `clockintr()`：更新時間與喚醒睡眠程式
+    
+     ```c
+     void
+     clockintr()
+     {
+       acquire(&tickslock);
+       ticks++;
+       wakeup(&ticks); // 喚醒所有在等待時間的 process
+       release(&tickslock);
+     }
+     ```
+
      > ticks 是全域變數（系統時鐘計數）。\
 每次 timer 中斷 → ticks++。\
 有些程式在睡眠時會呼叫 sleep(&ticks, ...)，\
 → 當 wakeup(&ticks) 執行時，那些睡在 &ticks 上的程式會被喚醒。
+   - `CLINT`： 在xv6裡，，硬體本身有「timer」裝置，它會定期觸發中斷。
+     - `mtime`：系統當前時間（不斷遞增的計數器）
+     - `mtimecmp`：下一次要產生中斷的時間點
+     > 只要 mtime >= mtimecmp，硬體就會發出一個 machine timer interrupt。\
+     > 這個中斷首先會被 timervec（在 kernel/kernelvec.S 裡）接到。
+timervec 做兩件事：
+把 mtimecmp 加上固定的「間隔」值（例如 10,000 個 cycle），排定下一次中斷。
+設定 sip 的 bit 2（Supervisor Interrupt Pending），讓 kernel 知道要處理時鐘中斷。
+   - 系統的時鐘（CLINT）是硬體自動在「固定時間間隔」發出中斷的，
+xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並喚醒被 sleep 的 process。
 
 ### 3. `kernel/kernelvec.S:kernelvec`
  - Kernel space interrupt handler
@@ -403,7 +417,7 @@
      w_sstatus(sstatus);
    }
    ```
-  - [devintr](#devintr)
+  - [devintr](#ix-devintr)
    ```c
    extern int devintr();
 
@@ -414,9 +428,7 @@
    
      if((scause & 0x8000000000000000L) &&
         (scause & 0xff) == 9){
-       // this is a supervisor external interrupt, via PLIC.
-   
-       // irq indicates which device interrupted.
+
        int irq = plic_claim();
    
        if(irq == UART0_IRQ){
@@ -427,23 +439,16 @@
          printf("unexpected interrupt irq=%d\n", irq);
        }
    
-       // the PLIC allows each device to raise at most one
-       // interrupt at a time; tell the PLIC the device is
-       // now allowed to interrupt again.
        if(irq)
          plic_complete(irq);
    
        return 1;
      } else if(scause == 0x8000000000000001L){
-       // software interrupt from a machine-mode timer interrupt,
-       // forwarded by timervec in kernelvec.S.
    
        if(cpuid() == 0){
          clockintr();
        }
        
-       // acknowledge the software interrupt by clearing
-       // the SSIP bit in sip.
        w_sip(r_sip() & ~2);
    
        return 2;
@@ -452,7 +457,7 @@
      }
     }
    ```
-  - [clockintr()](#clockintr)
+  - [clockintr()](#iv-clockintr)
    ```c
    void
    clockintr()
