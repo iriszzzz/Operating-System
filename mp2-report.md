@@ -87,7 +87,7 @@
 ### 2. `kernel/trampoline.S:uservec`
  - User space interrupt handler `為什麼要分 user 與 kernel handler`
  - `usertrapret` -> `kernel/trampoline.S:uservec` -> `usertrap` -> `devintr` -> `clockintr`
-#### I. `usertrapret`
+#### a. `usertrapret`
  - 前言：怎麼到`usertrapret`？
    > `usertrap()`裡最後會呼叫`usertrapret`，而每次進入`trampoline.S`裡的`uservec`都在結尾跳入`usertrap()`\
    > 每次在usertrap裡執行完任務後，回 user mode 前都會執行一次 usertrapret()，它會設定下次中斷時該跳回 uservec。\
@@ -144,7 +144,7 @@
      ((void (*)(uint64))trampoline_userret)(satp);
    }
    ```
-#### II. `kernel/trampoline.S:uservec`
+#### b. `kernel/trampoline.S:uservec`
    ```asm
    #include "riscv.h"
    #include "memlayout.h"
@@ -205,7 +205,7 @@
     jr t0 # jump to usertrap()
 
    ```
-#### III. `usertrap`
+#### c. `usertrap`
 
    ```c
    void
@@ -252,7 +252,7 @@
      usertrapret();
    }
    ```
-  #### IX. `devintr`
+  #### d. `devintr`
    ```c
    // check if it's an external interrupt or software interrupt,
    int
@@ -307,7 +307,7 @@
 這時就由 PLIC 來幫忙「統一收集、排隊、分發」這些中斷訊號。
   - `irq`：Interrupt Request，每個外部裝置（像 UART、磁碟、網卡）
 都會被分配一個 中斷編號（irq number）。當裝置要通知 CPU「我有事要你處理」時，透過這個編號向 PLIC 發出中斷請求。
-#### IV. `clockintr`
+#### e. `clockintr`
    - `clockintr()`：更新時間與喚醒睡眠程式
     
      ```c
