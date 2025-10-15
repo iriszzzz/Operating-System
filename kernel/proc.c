@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "mp2-mfqs.h"
 
 struct cpu cpus[NCPU];
 
@@ -139,6 +140,12 @@ found:
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
+
+  ////
+  p->rr_budget = 0;
+  p->est_burst = 0;   // t0 = 0
+  p->psjf_T    = 0;   // T 初始 0
+
   if(p->pagetable == 0){
     freeproc(p);
     release(&p->lock);
@@ -174,6 +181,11 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  ////
+  p->rr_budget     = 0;   
+  p->est_burst     = 0;   
+  p->psjf_T        = 0;   
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -599,10 +611,37 @@ void
 implicityield(void)
 {
   struct proc *p = myproc();
-  if(ticks - p->startrunningticks >= 1) {
-    // yield round robin scheduling
-    // actually ticks - p->startrunningticks should be 1
+  // if(ticks - p->startrunningticks >= 1) {
+  //   // yield round robin scheduling
+  //   // actually ticks - p->startrunningticks should be 1
+  //   yield();
+  if (!p) return;
+  if (p->state != RUNNING) return;
+  
+  //// L1 - PSJF累加ticks
+  if (p->priority >= 100){
+    p->psjf_T++;
+  }
+
+  //// L3 - RR
+  mfqs_rr_on_tick(p);
+  if (mfqs_rr_timeslice_up(p)) {
+    yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
+  }
+
+  //// preempt condition
+  if (p->priority < 100 && mfqs_l1_nonempty()) {
     yield();
+    return;
+  }
+  if (p->priority < 50 && mfqs_l2_nonempty()) {
+    yield();
+    return;
+  }
+  if (p->priority >= 100 && p->priority < 150) {
+    if (mfqs_l1_top_preempt(p)) {
+      yield();
+    }
   }
 }
 
@@ -649,6 +688,9 @@ sleep(void *chan, struct spinlock *lk)
     panic("sleep: allocchannel");
   }
   release(lk);
+
+  //// Running→Waiting，est_burst才更新
+  mfqs_update_est_burst(p);
 
   // Go to sleep.
   p->chan = chan;
@@ -869,6 +911,10 @@ proclistinit(void)
   }
   // initialize readylist.
   initproclist(&readylist);
+
+  ////
+  mfqs_init();
+  
   // initialize channels.
   for(i = 0; i < NCHANNEL; i++){
     channels[i].used = 0;
@@ -1155,27 +1201,39 @@ findchannel(void *chan)
   return cn;
 }
 
-// scheduler managed, push to ready list
-void
-pushreadylist(struct proc *p)
-{
-  struct proclistnode *pn;
-  if((pn = allocproclistnode(p)) == 0) {
-    panic("pushreadylist: allocproclistnode");
-  }
-  pushbackproclist(&readylist, pn);
-}
+// // scheduler managed, push to ready list
+// void
+// pushreadylist(struct proc *p)
+// {
+//   struct proclistnode *pn;
+//   if((pn = allocproclistnode(p)) == 0) {
+//     panic("pushreadylist: allocproclistnode");
+//   }
+//   pushbackproclist(&readylist, pn);
+// }
 
-// scheduler managed, pop from ready list
+// // scheduler managed, pop from ready list
+// struct proc*
+// popreadylist()
+// {
+//   struct proc *p;
+//   struct proclistnode *pn;
+//   if((pn = popfrontproclist(&readylist)) == 0) {
+//     return 0; // no runnable processes
+//   }
+//   p = pn->p;
+//   freeproclistnode(pn);
+//   return p;
+// }
+////
+void
+pushreadylist(struct proc *p){
+  mfqs_enqueue(p);
+}
 struct proc*
-popreadylist()
-{
+popreadylist(){
   struct proc *p;
-  struct proclistnode *pn;
-  if((pn = popfrontproclist(&readylist)) == 0) {
-    return 0; // no runnable processes
-  }
-  p = pn->p;
-  freeproclistnode(pn);
+  p = mfqs_dequeue();
+  if(p == 0) return 0;
   return p;
 }
