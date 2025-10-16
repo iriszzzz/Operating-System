@@ -4,6 +4,21 @@
 
 ## Table of contents
 
+- [Trace Code](#trace-code)
+  - [1. ``]()
+  - [2. ``]()
+  - [3. ``]()
+  - [4. ``]()
+  - [5. ``]()
+  - [6. ``]()
+- [Implementation](#implementation)
+  - [2.]()
+  - [1.]()
+- [Test report]()
+  - [1. ]()
+  - [2. ]()
+- [Contributions](#contributions)
+
 ## Trace Code
 
 - CSR （控制暫存器）: 
@@ -485,3 +500,235 @@ xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並
     - RUNNABLE -> Ready
     - RUNNING -> Running
     - ZOMBIE -> Terminated
+
+
+
+## Implementation
+ - 流程圖：
+    ```
+    Timer Interrupt
+        ↓
+    devintr → clockintr → (which_dev == 2) → implicityield()
+        ↓
+    [L1] PSJF 累加 T
+        ↓
+    [L3] 扣time quatum, 檢查time slice用完？
+        YES → yield() → 返回
+        NO ↓
+    [檢查preempt] 該被更高優先級搶佔？
+        - L2/L3 跑但 L1 有人？
+        - L3 跑但 L2 有人？  
+        - L1 跑但有更短的 L1？
+        YES → yield()
+        NO → 繼續執行
+    ```
+
+### 1. `kernel/proc.c`
+
+```c
+void
+implicityield(void)
+{
+  struct proc *p = myproc();
+  if (!p) return;
+  if (p->state != RUNNING) return;
+  
+  //// L1 - PSJF累加ticks
+  if (p->priority >= 100){
+    p->psjf_T++;
+  }
+
+  //// L3 - RR
+  mfqs_rr_on_tick(p);
+  if (mfqs_rr_timeslice_up(p)) {
+    yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
+  }
+
+  //// preempt condition
+  if (p->priority < 100 && mfqs_l1_nonempty()) {
+    yield();
+    return;
+  }
+  if (p->priority < 50 && mfqs_l2_nonempty()) {
+    yield();
+    return;
+  }
+  if (p->priority >= 100 && p->priority < 150) {
+    if (mfqs_l1_top_preempt(p)) {
+      yield();
+    }
+  }
+}
+```
+
+### 2. `kernel/proc.h`
+```c
+// Per-process state
+struct proc {
+  struct spinlock lock;
+  ...略
+  //// added for mp2
+  int rr_budget;     // L3
+  int est_burst;     // L1 Ti, est 初始值
+  int psjf_T;         // L1 T, 真實值
+};
+```
+
+
+### 1. Add a new file `kernel/mp2-mfqs.c`
+ - `Makefile`
+ ```makefile
+OBJS = \
+  $K/entry.o \
+  ...
+  $K/mp2-mfqs.o #新增這行
+ ```
+
+ ```c
+// mp2_mfqs.h
+#ifndef MP2_MFQS_H
+#define MP2_MFQS_H
+
+struct proc;
+
+void mfqs_init(void);
+void mfqs_enqueue(struct proc *p);
+struct proc* mfqs_dequeue(void);
+void mfqs_rr_on_tick(struct proc *p);
+int mfqs_rr_timeslice_up(struct proc *p);
+int level_of(struct proc *p);
+int mfqs_l1_nonempty(void);
+int mfqs_l1_top_preempt(struct proc *p);
+int mfqs_l2_nonempty(void);
+int mfqs_update_est_burst(struct proc *p);
+
+#endif // MP2_MFQS_H
+
+ ```
+
+
+ - `kernel/mp2-mfqs.c`
+ ```c
+#include "types.h"
+#include "param.h"
+#include "memlayout.h"
+#include "riscv.h"
+#include "spinlock.h"
+#include "proc.h"
+#include "defs.h"
+
+#define L3_MAX     49      // 0..49 放 L3（RR）
+#define L2_MIN     50      // 50..99 放 L2（Priority）
+#define L2_MAX     99
+#define L1_MIN     100     // >=100 放 L1（SJF）
+#define RR_QUANTUM 10      // L3 quantum
+
+static struct sortedproclist l1q; // L1：PSJF）→ 用排序佇列
+static struct sortedproclist l2q; // L2：Priority）→ 用排序佇列
+static struct proclist      l3q;  // L3：RR）→ 用一般佇列
+
+
+static int cmp_l1(struct proc *a, struct proc *b) {
+int remain_a = a->est_burst - a->psjf_T;  // 剩餘時間
+  int remain_b = b->est_burst - b->psjf_T;
+  
+  if (remain_a == remain_b) return (b->pid - a->pid);  // pid 小者先
+  return remain_b - remain_a;  // 剩餘時間小者先           
+}
+
+static int cmp_l2(struct proc *a, struct proc *b) {
+  if (a->priority == b->priority) return (b->pid - a->pid); // pid 小者先 → 正數
+  return a->priority - b->priority;                         // a 比 b 大 → 正數
+}
+
+static inline int level_of(struct proc *p){
+  if(p->priority >= L1_MIN) return 1;
+  if(p->priority >= L2_MIN && p->priority <= L2_MAX) return 2;
+  return 3;
+}
+
+// 準備三條隊伍（L1/L2/L3）
+void mfqs_init(void){
+  initsortedproclist(&l1q, cmp_l1);
+  initsortedproclist(&l2q, cmp_l2);
+  initproclist(&l3q);
+}
+
+// 把「已經是 RUNNABLE」的行程丟進正確隊伍
+void mfqs_enqueue(struct proc *p){
+    struct proclistnode *pn;
+    pn = allocproclistnode(p);
+    if(pn == 0)
+        panic("mfqs_enqueue: no proclistnode");
+    int level = level_of(p);
+    if(level == 1){
+        pushsortedproclist(&l1q, pn);
+    }else if(level == 2){
+        pushsortedproclist(&l2q, pn);
+    }else{
+        p->rr_budget = RR_QUANTUM; // L3 新來的行程
+        pushbackproclist(&l3q, pn);
+    }
+}
+
+// 依 L1 > L2 > L3 拿出要跑的人給 scheduler
+struct proc* mfqs_dequeue(void){
+    struct proclistnode *pn;    
+    // 1) L1_SJF
+    if((pn = popsortedproclist(&l1q))) {
+      struct proc *p = pn->p;   // 拿到真正的行程指標
+      freeproclistnode(pn);     // 用完節點，記得釋放（node 只是殼）
+      return p;                 // 交給 scheduler 跑
+    }   
+    // 2) else L2_Priority
+    if((pn = popsortedproclist(&l2q))) {
+      struct proc *p = pn->p;
+      freeproclistnode(pn);
+      return p;
+    }   
+    // 3) else L3_RR
+    if((pn = popfrontproclist(&l3q))) {
+      struct proc *p = pn->p;
+      freeproclistnode(pn);
+      return p;
+    }   
+    // 4) all_none -> 0
+    return 0;
+}
+
+
+
+// L3：每個 tick 扣一次量子；用完要讓位（回 ready）
+void mfqs_rr_on_tick(struct proc *p) {
+  if (level_of(p) == 3 && p->rr_budget > 0) p->rr_budget--;
+}
+int  mfqs_rr_timeslice_up(struct proc *p){
+    return (level_of(p) == 3 && p->rr_budget <= 0);
+}
+// l2
+int mfqs_l2_nonempty(void) {
+    return sizesortedproclist(&l2q) > 0;
+}
+// L1 preempt
+int mfqs_l1_nonempty(void) {
+    return sizesortedproclist(&l1q) > 0;
+}
+int mfqs_l1_top_preempt(struct proc *p) {
+    int r = cmptopsortedproclist(&l1q, p);
+    return (r < 0); //top更優先
+}
+
+void mfqs_update_est_burst(struct proc *p){ //only at Running -> Waiting
+    if(level_of(p) != 1) return;
+    p->est_burst = (p->est_burst + p->psjf_T) / 2;   // t_i = ⌊(T + t_{i-1})/2⌋
+    p->psjf_T = 0;
+}
+
+
+ ```
+###
+###
+
+
+## Contribution
+
