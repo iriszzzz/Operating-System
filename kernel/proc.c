@@ -145,6 +145,7 @@ found:
   p->rr_budget = 0;
   p->est_burst = 0;   // t0 = 0
   p->psjf_T    = 0;   // T 初始 0
+  p->ticks_waiting = 0; // Added for aging
 
   if(p->pagetable == 0){
     freeproc(p);
@@ -600,11 +601,58 @@ yield(void)
 }
 
 // Aging
-void
-aging(void)
+// void
+// aging(void)
+// {
+//   // Currently not implemented
+// }
+// void
+// aging(void)
+// {
+//   struct proc *p;
+//   for(p = proc; p < &proc[NPROC]; p++){
+//     acquire(&p->lock);
+//     if(p->state == RUNNABLE){
+//       p->ticks_waiting++;
+//       if(p->ticks_waiting >= 20){
+//         p->ticks_waiting = 0;
+//         if(p->priority < 149){
+//           p->priority++;
+//           mfqs_update_queue(p);  // move to correct queue
+//         }
+//       }
+//     }
+//     release(&p->lock);
+//   }
+// }
+void aging(void) // Add
 {
-  // Currently not implemented
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE) {
+      p->ticks_waiting++;
+      if (p->ticks_waiting >= 20) {
+        p->ticks_waiting = 0;
+        if (p->priority < 149) {
+          int old_level = level_of(p);
+          mfqs_remove(p);         // remove from old queue BEFORE changing priority
+          p->priority++;
+          int new_level = level_of(p);
+          if (new_level != old_level) {
+            mfqs_enqueue(p);      // re-enqueue into new queue
+          } else {
+            mfqs_enqueue(p);      // re-enqueue into same queue
+          }
+        }
+      }
+    }
+    release(&p->lock);
+  }
 }
+
+
+
 
 // Implicit yield is called on timer interrupt
 void
@@ -643,6 +691,8 @@ implicityield(void)
       yield();
     }
   }
+
+  aging(); // Add, Aging check
 }
 
 // A fork child's very first scheduling by scheduler()

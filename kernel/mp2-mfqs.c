@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "mp2-mfqs.h"
 
 #define L3_MAX     49      // 0..49 放 L3（RR）
 #define L2_MIN     50      // 50..99 放 L2（Priority）
@@ -30,7 +31,8 @@ static int cmp_l2(struct proc *a, struct proc *b) {
   return a->priority - b->priority;                         // a 比 b 大 → 正數
 }
 
-static inline int level_of(struct proc *p){
+// static inline int level_of(struct proc *p){
+int level_of(struct proc *p){
   if(p->priority >= L1_MIN) return 1;
   if(p->priority >= L2_MIN && p->priority <= L2_MAX) return 2;
   return 3;
@@ -113,3 +115,60 @@ void mfqs_update_est_burst(struct proc *p){ //only at Running -> Waiting
     p->psjf_T = 0;
 }
 
+void mfqs_remove(struct proc *p) { // Add
+  int level = level_of(p);
+  struct proclistnode *pn;
+
+  if (level == 1) {
+    pn = findsortedproclist(&l1q, p);
+    if (pn) {
+      removesortedproclist(&l1q, pn);
+      freeproclistnode(pn);
+    }
+  } else if (level == 2) {
+    pn = findsortedproclist(&l2q, p);
+    if (pn) {
+      removesortedproclist(&l2q, pn);
+      freeproclistnode(pn);
+    }
+  } else {
+    pn = findproclist(&l3q, p);
+    if (pn) {
+      removeproclist(&l3q, pn);
+      freeproclistnode(pn);
+    }
+  }
+}
+
+void mfqs_update_queue(struct proc *p) { // Add
+  mfqs_remove(p);  // remove from old queue
+
+  // Update queue_level
+  if (p->priority >= L1_MIN) {
+    p->queue_level = 2;
+  } else if (p->priority >= L2_MIN) {
+    p->queue_level = 1;
+  } else {
+    p->queue_level = 0;
+  }
+
+  mfqs_enqueue(p);  // re-enqueue into correct queue
+}
+
+struct proclistnode* findsortedproclist(struct sortedproclist *pl, struct proc *p) { // Add
+  struct proclistnode *cur = pl->head->next;
+  while (cur != pl->tail) {
+    if (cur->p == p)
+      return cur;
+    cur = cur->next;
+  }
+  return 0;
+}
+
+void removesortedproclist(struct sortedproclist *pl, struct proclistnode *pn) { // Add
+  if (!pn || pn == pl->head || pn == pl->tail)
+    return;
+  pn->prev->next = pn->next;
+  pn->next->prev = pn->prev;
+  pl->size--;
+}
