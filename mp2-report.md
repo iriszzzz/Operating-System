@@ -760,9 +760,9 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
     a. `kernel/trap.c/kerneltrap()`
 
-        processs 因 Timer Interrupt 而非自願暫停時，控制權會先進入這兩個函數之一。如果 process 正在 user space 執行，流程會導向 usertrap；如果正在核心，則導向 kerneltrap，最後會調用 clockintr
+      processs 因 Timer Interrupt 而非自願暫停時，控制權會先進入這兩個函數之一。如果 process 正在 user space 執行，流程會導向 usertrap；如果正在核心，則導向 kerneltrap，最後會調用 clockintr
 
-        > sepc 是 RISC-V 架構中的一個特殊寄存器，它表示 “Exception Program Counter”異常程序計數器。當發生異常或中斷時，處理器會將當前正在執行的指令的地址保存到 sepc 中，以便異常處理完成後，可以繼續從該位置返回執行
+      > sepc 是 RISC-V 架構中的一個特殊寄存器，它表示 “Exception Program Counter”異常程序計數器。當發生異常或中斷時，處理器會將當前正在執行的指令的地址保存到 sepc 中，以便異常處理完成後，可以繼續從該位置返回執行
 
         ```c
         void 
@@ -784,8 +784,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
     b. `kernel/trap.c/usertrap()`
 
-        > Interrupt Vector
-        中斷向量是一個數據結構，包含一組處理中斷或異常的處理函數的地址。在 RISC-V 中，當處理器發生中斷或異常時，它會查找與該中斷或異常類型對應的處理函數，並跳轉到該處理函數的入口處執行
+      > Interrupt Vector
+      中斷向量是一個數據結構，包含一組處理中斷或異常的處理函數的地址。在 RISC-V 中，當處理器發生中斷或異常時，它會查找與該中斷或異常類型對應的處理函數，並跳轉到該處理函數的入口處執行
 
         ```c
         void
@@ -818,6 +818,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         }
         ```
 2. `kernel/proc.c/yield()`
+
     當 time slice 用完、或搶佔條件滿足等情況發生時，[kernel/proc.c/implicityield()](#1-kernelprocc) 觸發 `yield()`，`yield()`將當前運行的 process 從 Running state 移到 Ready、當前 process 狀態設定為 RUNNABLE，然後讓 scheduler() 決定接下來運行哪個
 
     ```c
@@ -924,8 +925,293 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 ----
 
 #### Waiting $\to$ Ready
+- 前言：timer interrupt 的週期性中斷發生時，由 trap handler 間接呼叫觸發 `clockintr()` 的階段
+  - `kernel/start.c/timerinit()` CLINT $\to$ `kernel/kernelvec.S/timervec()`觸發 supervisor interrupt $\to$ `kernel/trap.c/devintr()` $\to$  `clockintr()`
 
+    ```text
+    (1) timerinit()
+        ↓ 設定
+    (2) CLINT mtime ≥ mtimecmp → machine-mode timer interrupt
+        ↓ trap
+    (3) CPU trap → 跳到 timervec (kernelvec.S)
+        ↓
+    (4) timervec：
+        - 設定下一次 mtimecmp（周期性）
+        - 寫入 sip（Supervisor Interrupt Pending）產生 software interrupt
+        ↓
+    (5) software interrupt → kerneltrap() 觸發
+        ↓
+    (6) kerneltrap() 呼叫 devintr()
+        ↓
+    (7) devintr() 偵測 scause == supervisor software interrupt
+        ↓
+    (8) devintr() 呼叫 clockintr()（只有在 CPU 0）
+        ↓
+    (9) clockintr() 執行：ticks++、wakeup(&ticks)、aging 等
+    ```
+
+    1. `kernel/start.c/timerinit()`
+
+      `timerinit()` 會設定 RISC-V 的 CLINT timer，使得 timer interrupt 發生後，CPU 會跳到 timervec（trap handler）中。
+      timervec 會將這個 machine-mode timer interrupt 轉換成 supervisor-mode software interrupt，然後由 kerneltrap() → devintr() → clockintr() 執行
+
+        ```c
+        void
+        timerinit()
+        {
+          int id = r_mhartid(); // 取得當前 CPU 的 ID，CPU 都有自己的 timer，每個核心都需要分別設定其 mtimecmp
+
+          int interval = 10000; 
+          // CLINT_MTIMECMP(id) 是一個記憶體映射的暫存器，控制何時產生下一個 timer interrupt
+          // 當 mtime >= mtimecmp，CLINT 就會發出 machine-mode timer interrupt
+          *(uint64*)CLINT_MTIMECMP(id) = *(uint64*)CLINT_MTIME + interval;
+
+          uint64 *scratch = &timer_scratch[id][0];
+          scratch[3] = CLINT_MTIMECMP(id);
+          scratch[4] = interval;
+          w_mscratch((uint64)scratch); // 傳入一些 scratch 空間與 metadata 給 timervec.S 使用
+
+          w_mtvec((uint64)timervec); // 重要！設定 machine-mode trap vector：當 machine-mode trap（如 timer interrupt）發生時，跳到timervec執行
+          ...
+        }
+        ```
+
+    2. `kernel/kernelvec.S/timervec`
+
+        Machine-mode 設定了 sip.SSIP = 1，這樣 S-mode 就會產生 software interrupt。(在下一個 trap 發生時，S-mode 將會進入 stvec 所設定的入口，也就是kernelvec)
+
+        > <span style="color:orange;">為什麼這是在 machine-mode 設定的?</span>
+            因為timervec 是 machine-mode 下的 interrupt handler（處理 mtime >= mtimecmp 的情況），
+            machine-mode 不能直接呼叫 supervisor-mode 的 handler（因為不是 nested trap）。
+            所以它是安排好下一個 supervisor-mode interrupt（SSIP），由 OS 自己來處理
+
+        > mstatus 寄存器，有 SPP（Supervisor Previous Privilege）欄位，記錄了「trap 發生前的權限模式」
+            SPP = 0 $\to$ trap 之前是 user mode（U-mode）
+            SPP = 1 $\to$ trap 之前是 supervisor mode（S-mode）
+
+        ```S
+        timervec:
+            csrrw a0, mscratch, a0
+            sd a1, 0(a0)
+            sd a2, 8(a0)
+            sd a3, 16(a0)
+
+            # 下一次的 timer interrupt（週期性）
+            ld a1, 24(a0) # mtimecmp 位址
+            ld a2, 32(a0) # 間隔時間
+            ld a3, 0(a1)  # 目前 mtime 值
+            add a3, a3, a2
+            sd a3, 0(a1)  # 寫入下一次中斷時間
+
+            # 設定 supervisor software interrupt
+            li a1, 2      # S-mode software interrupt bit（SSIP）。 2 的二進位是 10，代表 bit 1 設為 1（SSIP）
+            csrw sip, a1  # 寫入 SIP CSR
+
+            # 還原暫存器、返回 machine mode
+            ...
+            mret
+        ```
+    3. `kernel/kernelvec.S/kernelvec`
+
+        當 supervisor-mode 發生 trap 時，就會跳到 stvec 所設定的 handler。執行時會先儲存所有暫存器，呼叫 `kerneltrap()` 處理 trap，最後還原暫存器並 sret 返回原本指令
+
+          ```S
+          kernelvec:
+              addi sp, sp, -256   # 建立 trap frame 空間
+              sd ra, 0(sp)        # 儲存暫存器
+              ...
+              call kerneltrap     # 呼叫 C 的 trap handler
+              ...
+              addi sp, sp, 256
+              sret                # 回到被中斷前的位置
+          ```
+    4. `kernel/trap.c/kerneltrap()`
+        kerneltrap() 會接著呼叫 `devintr()` 判斷 trap 類型
+
+          ```c
+          void kerneltrap() {
+              ...
+              if((sstatus & SSTATUS_SPP) == 0)
+                  panic("kerneltrap: not from supervisor mode");
+
+              if(intr_get() != 0)
+                  panic("kerneltrap: interrupts enabled");
+              if((which_dev = devintr()) != 0){ // 處理外部中斷
+                  ...
+              }
+              ...
+          }
+          ```
+    5. `kernel/trap.c/devintr()`
+
+        `scause = 0x8000000000000001` 代表 supervisor software interrupt，會呼叫 `clockintr()`，最後清掉 sip 中的 SSIP bit（避免重複中斷）
+
+          ```c
+          int devintr() {
+              ...
+              uint64 scause = r_scause();
+
+              if((scause & 0x8000000000000000L) &&
+                (scause & 0xff) == 1){// supervisor software interrupt (SSIP)
+                  if(cpuid() == 0){
+                      clockintr();   // 只有 CPU 0 處理時鐘中斷
+                  }
+                  w_sip(r_sip() & ~2); // 清掉 SSIP
+                  return 2;
+              }
+              ...
+          }
+          ```
+
+- `kernel/trap.c/clockintr()` $\to$ `kernel/proc.c/wakeup()`
+
+  1. `kernel/trap.c/clockintr()`
+
+      處理計時器邏輯
+
+      ```c
+      void
+      clockintr()
+      {
+        acquire(&tickslock); // 確保對 ticks 變數的存取是安全的
+        ticks++; // 累加 ticks
+        wakeup(&ticks); // 會叫醒所有在 &ticks 上等待的 process
+        release(&tickslock); // 釋放鎖，讓其他核心或程式可繼續訪問 ticks
+      }
+      ```
+  2. `kernel/proc.c/wakeup()`
+
+      叫醒所有在 chan 通道上睡覺的 process
+
+        ```c
+        void
+        wakeup(void *chan)
+        {
+          struct proc *p;
+          struct channel *cn;
+          struct proclistnode *pn; // 指向通道中 process 的 list node（用來維護等待清單）
+
+          if((cn = findchannel(chan)) == 0) { // chan 是一個指標，代表程序在這裡等待的地方
+            return; // 找不到
+          }
+          while((pn = popfrontproclist(&cn->pl)) != 0){ // 從 channel 的等待清單取出一個 process node
+            p = pn->p;
+            freeproclistnode(pn);
+            acquire(&p->lock); // 對該 process 上鎖，避免同時改狀態
+            if(p == myproc()) { // 驗證 process 狀態是否合理
+              panic("wakeup: wakeup self");
+            }
+            if(p->state != SLEEPING) {
+              panic("wakeup: not sleeping");
+            }
+            if(p->chan != chan) {
+              panic("wakeup: wrong channel");
+            }
+            p->state = RUNNABLE;
+            procstatelog(p);
+            pushreadylist(p); // 把 process 放到 ready list
+            release(&p->lock); 
+          }
+          cn->used = 0;
+          release(&cn->lock); // 清空 channel，表沒有人在這個 channel
+        }
+        ```
+----
 #### Running $\to$ Terminated
+
+- `sys_exit` -> `exit` -> `sched`
+  - 前言：如何從user program 到 `sys_exit`
+    
+    (例) `user/sh.c/runcmd()/exit(0);` $\to$ `usys.S/ecall` $\to$ `kernel/trampoline.S/uservec` $\to$  `kernel/trap.c/usertrap()` $\to$ `kernel/syscall.c/syscall()` $\to$ `syscall.c/sys_exit()`
+
+    1. `user/sh.c/exit(0);` 
+
+        `runcmd()` 最後呼叫 `exit(0);`
+
+          ```c
+          void
+          runcmd(struct cmd *cmd)
+          {
+            ...
+            exit(0);
+          }
+          ```
+    2. `user/usys.S/ecall`
+
+        把 syscall 編號寫進 a7，執行 ecall。CPU 根據 stvec跳到 uservec
+
+          ```S
+          .global exit
+          exit:
+          li a7, SYS_exit # a7 = 1
+          ecall 
+          ret
+          ```
+    3. `kernel/trampoline.S/uservec`
+
+          一開始保存所有 user mode 寄存器到 TRAPFRAME 中，把 kernel stack、kernel trap handler（usertrap()）、kernel page table 都從 trapframe 中取出來，執行 `jr t0` 跳到 `usertrap()`
+
+          ```S
+          .globl uservec
+          uservec:
+              csrw sscratch, a0
+              li a0, TRAPFRAME
+              ...
+              ld t0, 16(a0)      # p->trapframe->kernel_trap
+              jr t0              # 跳到 C 語言中的 usertrap()
+          ```
+
+    4. `kernel/trap.c/usertrap()` 
+
+          ```c
+          void
+          usertrap(void)
+          {
+            ...
+            if(r_scause() == 8){ // 8 表示是 system call (ecall from U-mode)
+              if(killed(p))
+                exit(-1);
+
+              p->trapframe->epc += 4; // 跳過 ecall 指令
+
+              intr_on(); // 開中斷
+              syscall(); // 進入 syscall dispatcher
+            } ...
+          }
+          ```
+      5. `kernel/syscall.c/syscall()`
+
+          如果 `a7 = SYS_exit`，`syscall()` 就會呼叫 `sys_exit()`
+
+            <details>
+            <summary><span style="color:orange;">syscalls[]</span></summary>
+
+            ```c
+            static uint64 (*syscalls[])(void) = {
+              [SYS_exit]    sys_exit,
+              [SYS_getpid]  sys_getpid,
+              [SYS_fork]    sys_fork,
+              ...
+            };
+            ```
+            </details> 
+            
+
+            ```c
+            void
+            syscall(void)
+            {
+              int num;
+              struct proc *p = myproc();
+
+              num = p->trapframe->a7;  // syscall number 存在 a7 中
+              if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+                p->trapframe->a0 = syscalls[num]();  // 呼叫對應的 sys_*
+              } else {
+                ...
+              }
+            }
+            ```
 
 #### Ready $\to$ Running
 - `kernel/proc.c/scheduler` $\to$ `popreadylist()` $\to$ `kernel/swtch.S`
