@@ -1626,6 +1626,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 - test_preempt_a/b/c: 驗證 schedular 能在不同情況下正確執行 preempt 與切換
 
 ### 2. ./grade-mp2-bonus 測試
+<p align="center"><img src="grade-mp2-bonus.png" alt="Diagram of Process State" width="600"></p>
 
 - aging: 一個 process 長時間沒被排程，它的 priority 是否會逐漸提高
 
