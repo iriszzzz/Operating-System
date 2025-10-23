@@ -1661,7 +1661,6 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
 2. `mfqs_remove()`
-
     確認 process 位於哪一層（`level_of(p)`）、在該層對應的 queue 中尋找、並將它移除。最後釋放該節點的記憶體
 
       ```c
@@ -1678,11 +1677,40 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         } ...
       }
       ```
+3. `findsortedproclist()`
+
+    在已排序的 proclist 裡面，尋找指向指定 proc 的節點
+
+    ```c
+    struct proclistnode* findsortedproclist(struct sortedproclist *pl, struct proc *p) { // Add
+      struct proclistnode *cur = pl->head->next;
+      while (cur != pl->tail) {
+        if (cur->p == p)
+          return cur;
+        cur = cur->next;
+      }
+      return 0;
+    }
+    ```
+
+4. `removesortedproclist()`
+
+    從 linked list 中移除一個節點 (`pn`)
+
+    ```c
+    void removesortedproclist(struct sortedproclist *pl, struct proclistnode *pn) { // Add
+      if (!pn || pn == pl->head || pn == pl->tail)
+        return;
+      pn->prev->next = pn->next;
+      pn->next->prev = pn->prev;
+      pl->size--;
+    }
+    ```
 
 ## Test report
 
 ### 1. ./grade-mp2-public 測試
-<p align="center"><img src="grade-mp2-public.png" alt="Diagram of Process State" width="300"></p>
+<p align="center"><img src="grade-mp2-public.png" alt="Diagram of Process State" width="400"></p>
 
 - test_benchmark: 跑一基本負載 mp2-benchmark，取得 workload 參數，讓後面 test 知道該用哪個 workload
 - test_psjf: 測試 Preemptive Shortest Job First (PSJF)，檢查 PSJF preemption，最短剩餘時間的 process 優先執行，若有可以會 preempt 較長的
@@ -1690,6 +1718,37 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 - test_rr: 驗證 RR quantum 是否正確實作
 - test_aging: 驗證 aging 機制是否能讓低優先序的 7 最終被提升並完成工作，同時高優先序的行程不被干擾
 - test_preempt_a/b/c: 驗證 schedular 能在不同情況下正確執行 preempt 與切換
+
+### 2. ./grade-mp2-bonus 測試
+
+- aging: 一個 process 長時間沒被排程，它的 priority 是否會逐漸提高
+
+```c
+@test(10, "aging-check")
+def test_simple_aging():
+    r.run_qemu(shell_script(["mp2-aging 100"]))   # 建立一個 Runner 物件，跑 xv6
+    out = r.qemu.output # 在 xv6 shell 裡執行指令 mp2-aging 100
+
+    logs = parse(out)
+    assert logs, "No procstatelog lines found."
+    # 偵測 priority 是否增加
+    pattern = re.compile(r"pid=(\d+).*priority=(\d+)")
+    priorities = {}
+    for line in logs:
+        m = pattern.search(line)
+        if not m: continue
+        pid, pr = int(m.group(1)), int(m.group(2))
+        if pid not in priorities:
+            priorities[pid] = []
+        priorities[pid].append(pr)
+
+    for pid, pr_list in priorities.items():
+        if len(pr_list) < 2:
+            continue
+        assert pr_list[-1] >= pr_list[0], f"Process {pid} did not age (priority {pr_list[0]}→{pr_list[-1]})"
+
+run_tests()
+```
 
 ## Contributions
 
