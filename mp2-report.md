@@ -9,8 +9,11 @@
   - [2. Mapping xv6 Process States](#mapping-xv6-process-states)
   - [3. Process State Transitions and Queue Interactions](#process-state-transitions-and-queue-interactions)
 - [Implementation](#implementation)
-  - [2.]()
-  - [1.]()
+  - [1. Proc.c/Proc.h](#1-procc--proch)
+  - [2. Mfqs.h : funct-prototypes](#2-mp2-mfqsh-function-prototypes)
+  - [3. Mfqs.c : queue-management](#3-mp2-mfqsc-queue-management)
+  - [4. Mfqs.c : queue-time-records](#4-mp2-mfqsc-queue-time-records)
+  - [5. Aging](#5-mp2-mfqsc-aging-implementation)
 - [Test report]()
   - [1. ]()
   - [2. ]()
@@ -1329,10 +1332,11 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     ```
 
   為了實現`multi feedback queue scheduler` 實作功能，因此在 `kernel` 新增檔案 `mp2-mfqs.c/ .h`，
-  並在proc.c 中的排程接口與過程加入新增的函式。 
+  並在 `proc.c` 中的排程接口與過程加入新增的函式。 
 
-### 1. `proc.h`: Process Initialization
- - `rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
+### 1. `proc.c / proc.h`: 
+ 1. `proc.h`：Process Initialization
+      - `rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
     ```c
     static struct proc*
     allocproc(void)
@@ -1346,8 +1350,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
 
-### 2. `proc.c`
- 1. `implicityield()` : Timer Interrupt Handling
+ 2. `Proc.c`
+  - `implicityield()` : Timer Interrupt Handling
     - 確認當前 process 狀態
     <a id ="proc.c"></a>
     ```c
@@ -1396,8 +1400,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
      - [Aging 檢查](#6-mp2-mfqsc-aging-implementation) 
- 3. `proclistinit()`：加入 [mfqs_init()](#mfqs_init) 指令，初始化 mfqs 的三種佇列
- 2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示<a id="pushpop"></a>，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
+  - `proclistinit()`：加入 [mfqs_init()](#mfqs_init) 指令，初始化 mfqs 的三種佇列<a id="initial"></a>
+  - `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示<a id="pushpop"></a>，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
     ```c
     void
     pushreadylist(struct proc *p){
@@ -1412,9 +1416,9 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
       return p;
     }
     ```
- 3. `allocproc()`和`freeproc()`：裡增加初始設定p -> `rr_budget / est_burst / psjf_T / ticks_waiting` ＝0，以及釋放後的歸零。
+  - `allocproc()`和`freeproc()`：裡增加初始設定p -> `rr_budget / est_burst / psjf_T / ticks_waiting` ＝0，以及釋放後的歸零。
 
- 4. `void sleep()` 裡加入 [mfqs_update_est_burst(p)](#estburst) ，SJF 需要在一次 CPU burst 結束時更新估計值。
+  - `void sleep()` 裡加入 [mfqs_update_est_burst(p)](#estburst) ，SJF 需要在一次 CPU burst 結束時更新估計值。
     [sleep()](#sleep) 是 Running → Waiting 的轉移點，此時用剛結束的 last_burst 更新 est_burst，讓下次由`waiting → ready` [wakeup()](#wakeup())
     呼叫 `pushreadylist(p)` 時就能依更新的 est_burst 排入隊伍。 <a id="voidsleep"></a>
 
@@ -1422,9 +1426,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     void
     sleep(void *chan, struct spinlock *lk)
     {
-      struct proc *p = myproc();
-      struct channel *cn;
-      struct proclistnode *pn;
+      ...
+
       acquire(&p->lock);  //DOC: sleeplock1
       if((cn = findchannel(chan)) == 0 && (cn = allocchannel(chan)) == 0) {
         panic("sleep: allocchannel");
@@ -1443,7 +1446,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     ```
 
 
-### 3. `mp2-mfqs.h`: Function Prototypes
+### 2. `mp2-mfqs.h`: Function Prototypes
 
 `mfqs.h` 可分成三個區塊，提供外部程式`proc.c`可呼叫宣告的函式。
 
@@ -1473,7 +1476,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
 
 
-### 4. `mp2-mfqs.c`: Queue Management
+### 3. `mp2-mfqs.c`: Queue Management
 
   1. 初始化設定需要的資料結構以及函式
 
@@ -1497,7 +1500,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
      static struct proclist      l3q;  // L3：RR → 用一般佇列
      ```
      <a id="mfqs_init"></a>
-2. `建立 Queue` : 佇列初始化，建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可。
+2. `建立 Queue` : 佇列[初始化](#initial)，建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可。
     - `cmp_l1`：比剩餘時間小的， `cmp(a, b) > 0` 代表 a 應該排在前面。
    - `cmp_l2`：只需比較 `pid`。
 
@@ -1590,7 +1593,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
      ```
 
 
-### 5. `mp2-mfqs.c`: Queue Time Records
+### 4. `mp2-mfqs.c`: Queue Time Records
 
 1. `L3: round robin`
    - `mfqs_rr_on_tick`： 扣 1 quantum
@@ -1622,7 +1625,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
     ```
 
-### 6. `mp2-mfqs.c`: Aging Implementation
+### 5. `mp2-mfqs.c`: Aging Implementation
 
 1. `aging()`: 判斷點在 `implicityield()` 每次 tick 執行，掃描整個 `proc` 陣列
   當 process 在 ready queue 等待太久（`ticks_waiting` >= 20）：  
