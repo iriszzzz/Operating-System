@@ -114,6 +114,8 @@ struct proc {
   int rr_budget;     // L3
   int est_burst;     // L1 Ti, est 初始值
   int psjf_T;         // L1 T, 真實值
+  int queue_level;       // Added, 0: L3, 1: L2, 2: L1
+  int ticks_waiting;     // Added, For aging: how long in ready queue
 };
 
 // for mp2
