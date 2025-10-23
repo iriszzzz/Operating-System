@@ -1330,71 +1330,72 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 <p align="center"><img src="flow.png" alt="Diagram of Process State" width="500"></p>
 
 ### 1. `proc.c`: Timer Interrupt Handling
-  1. `implicityield()` : 
-    - 確認當前 process 狀態
-    - L1 (PSJF)：累加 CPU burst 時間
-    - L3 (RR)：計算 time quantum
-    - Preemption 檢查
-    - Aging 檢查
+1. `implicityield()` : 
 
-      ```c
-      // Implicit yield is called on timer interrupt
-      void
-      implicityield(void)
-      {
-        struct proc *p = myproc();
-  
-        if (!p) return;
-        if (p->state != RUNNING) return;
-        
-        //// L1 - PSJF累加ticks
-        if (p->priority >= 100){
-          p->psjf_T++;
-        }
+  - 確認當前 process 狀態
+  - L1 (PSJF)：累加 CPU burst 時間
+  - L3 (RR)：計算 time quantum
+  - Preemption 檢查
+  - Aging 檢查
 
-        //// L3 - RR
-        mfqs_rr_on_tick(p);
-        if (mfqs_rr_timeslice_up(p)) {
-          yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
-        }
+    ```c
+    // Implicit yield is called on timer interrupt
+    void
+    implicityield(void)
+    {
+      struct proc *p = myproc();
 
-        //// preempt condition
-        if (p->priority < 100 && mfqs_l1_nonempty()) {
-          yield();
-          return;
-        }
-        if (p->priority < 50 && mfqs_l2_nonempty()) {
-          yield();
-          return;
-        }
-        if (p->priority >= 100 && p->priority < 150) {
-          if (mfqs_l1_top_preempt(p)) {
-            yield();
-          }
-        }
-
-        aging(); // Add, Aging check
-      }
-      ```
-
-  2. `pushreadylist()`、`popreadylist()`：
+      if (!p) return;
+      if (p->state != RUNNING) return;
       
-      在`yield()`裡被呼叫的函示，確保修改使用 `mfqs`規則，實作在 `mfqs.c`檔裡。
-    
-      ```c
-      void
-      pushreadylist(struct proc *p){
-        mfqs_enqueue(p);
+      //// L1 - PSJF累加ticks
+      if (p->priority >= 100){
+        p->psjf_T++;
       }
 
-      struct proc*
-      popreadylist(){
-        struct proc *p;
-        p = mfqs_dequeue();
-        if(p == 0) return 0;
-        return p;
+      //// L3 - RR
+      mfqs_rr_on_tick(p);
+      if (mfqs_rr_timeslice_up(p)) {
+        yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
       }
-      ```
+
+      //// preempt condition
+      if (p->priority < 100 && mfqs_l1_nonempty()) {
+        yield();
+        return;
+      }
+      if (p->priority < 50 && mfqs_l2_nonempty()) {
+        yield();
+        return;
+      }
+      if (p->priority >= 100 && p->priority < 150) {
+        if (mfqs_l1_top_preempt(p)) {
+          yield();
+        }
+      }
+
+      aging(); // Add, Aging check
+    }
+    ```
+
+2. `pushreadylist()`、`popreadylist()`：
+    
+    在`yield()`裡被呼叫的函示，確保修改使用 `mfqs`規則，實作在 `mfqs.c`檔裡。
+  
+    ```c
+    void
+    pushreadylist(struct proc *p){
+      mfqs_enqueue(p);
+    }
+
+    struct proc*
+    popreadylist(){
+      struct proc *p;
+      p = mfqs_dequeue();
+      if(p == 0) return 0;
+      return p;
+    }
+    ```
 
 
 ### 2. `proc.h`: Process Initialization
@@ -1418,33 +1419,33 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
 `mfqs.h` 可分成三個區塊，提供外部程式`proc.c`可呼叫宣告的函式。
 
-  1. `Queue Management`
+1. `Queue Management`
 
-      ```c
-      // mp2_mfqs.h
+    ```c
+    // mp2_mfqs.h
 
-      struct proc;
-      void mfqs_init(void);                 // 初始化建立三個queue
-      void mfqs_enqueue(struct proc *p);    // 程式分類成三個queue的規則
-      int level_of(struct proc *p);         // 可快速取得 p 的 queue level
-      struct proc* mfqs_dequeue(void);      // 依序拿出要跑的 p 給 scheduler
-      int mfqs_l1_nonempty(void);           // 確認 L1 是否有剩餘的未完成process
-      int mfqs_l2_nonempty(void);           // 確認 L2 是否有剩餘的未完成process
+    struct proc;
+    void mfqs_init(void);                 // 初始化建立三個queue
+    void mfqs_enqueue(struct proc *p);    // 程式分類成三個queue的規則
+    int level_of(struct proc *p);         // 可快速取得 p 的 queue level
+    struct proc* mfqs_dequeue(void);      // 依序拿出要跑的 p 給 scheduler
+    int mfqs_l1_nonempty(void);           // 確認 L1 是否有剩餘的未完成process
+    int mfqs_l2_nonempty(void);           // 確認 L2 是否有剩餘的未完成process
 
-      ```
- 2. `L1 SJF rules`
+    ```
+2. `L1 SJF rules`
 
-      ```c
-      int mfqs_l1_top_preempt(struct proc *p);  // 檢查 L1 的 top 是否要preempt
-      int mfqs_update_est_burst(struct proc *p);// 更新 L1 p 的 approximated burst time
-      ```
+    ```c
+    int mfqs_l1_top_preempt(struct proc *p);  // 檢查 L1 的 top 是否要preempt
+    int mfqs_update_est_burst(struct proc *p);// 更新 L1 p 的 approximated burst time
+    ```
 
- 3. `L3 RR rules`
+3. `L3 RR rules`
 
-      ```c
-      void mfqs_rr_on_tick(struct proc *p); // round robin 扣 ticks
-      int mfqs_rr_timeslice_up(struct proc *p); // 檢查 rr 狀態下的time slice是否用完
-      ```
+    ```c
+    void mfqs_rr_on_tick(struct proc *p); // round robin 扣 ticks
+    int mfqs_rr_timeslice_up(struct proc *p); // 檢查 rr 狀態下的time slice是否用完
+    ```
 
 
 
