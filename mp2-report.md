@@ -818,7 +818,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         }
         ```
 2. `kernel/proc.c/yield()`
-
+    <a id="yield"></a>
     當 time slice 用完、或搶佔條件滿足等情況發生時，[kernel/proc.c/implicityield()](#1-kernelprocc) 觸發 `yield()`，`yield()`將當前運行的 process 從 Running state 移到 Ready、當前 process 狀態設定為 RUNNABLE，然後讓 scheduler() 決定接下來運行哪個
 
     ```c
@@ -1392,7 +1392,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
  3. `proclistinit()`：加入 [mfqs_init()](#mfqs_init) 指令，初始化 mfqs 的三種佇列
- 2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
+ 2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示<a id="pushpop"></a>，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
     ```c
     void
     pushreadylist(struct proc *p){
@@ -1527,7 +1527,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     ```
 <div id = "mfqs_enqueue"></div>
 
-3. `管理 Queue`: 在 mfqs 的 ready queue 上執行 enqueue 及 dequeue
+3. `管理 Queue`: 在 mfqs 的 ready queue 上執行 enqueue 及 dequeue，讓[pushreadylist()、popreadylist()](#pushpop)函式可呼叫
       - ` Enqueue` : 把「已經是 RUNNABLE」的行程丟進正確隊伍(L1/ L2/ L3)
       - ` Dequeue`：從三列隊伍中依 L1 > L2 > L3 順序拿出要跑的行程給 scheduler
     
