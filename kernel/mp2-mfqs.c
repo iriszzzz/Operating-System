@@ -140,20 +140,20 @@ void mfqs_remove(struct proc *p) { // Add
   }
 }
 
-void mfqs_update_queue(struct proc *p) { // Add
-  mfqs_remove(p);  // remove from old queue
+// void mfqs_update_queue(struct proc *p) { // Add
+//   mfqs_remove(p);  // remove from old queue
 
-  // Update queue_level
-  if (p->priority >= L1_MIN) {
-    p->queue_level = 2;
-  } else if (p->priority >= L2_MIN) {
-    p->queue_level = 1;
-  } else {
-    p->queue_level = 0;
-  }
+//   // Update queue_level
+//   if (p->priority >= L1_MIN) {
+//     p->queue_level = 2;
+//   } else if (p->priority >= L2_MIN) {
+//     p->queue_level = 1;
+//   } else {
+//     p->queue_level = 0;
+//   }
 
-  mfqs_enqueue(p);  // re-enqueue into correct queue
-}
+//   mfqs_enqueue(p);  // re-enqueue into correct queue
+// }
 
 struct proclistnode* findsortedproclist(struct sortedproclist *pl, struct proc *p) { // Add
   struct proclistnode *cur = pl->head->next;
