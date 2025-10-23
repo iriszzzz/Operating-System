@@ -1453,25 +1453,25 @@ mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下�
 
   1. 初始化設定需要的資料結構以及函式
 
-    ```c
-    #include "types.h"
-    #include "param.h"
-    #include "memlayout.h"
-    #include "riscv.h"
-    #include "spinlock.h"
-    #include "proc.h"
-    #include "defs.h"
-    
-    #define L3_MAX     49      // 0..49 放 L3（RR）
-    #define L2_MIN     50      // 50..99 放 L2（Priority）
-    #define L2_MAX     99
-    #define L1_MIN     100     // >=100 放 L1（SJF）
-    #define RR_QUANTUM 10      // L3 quantum
-    
-    static struct sortedproclist l1q; // L1：PSJF → 用排序佇列
-    static struct sortedproclist l2q; // L2：Priority → 用排序佇列
-    static struct proclist      l3q;  // L3：RR → 用一般佇列
-    ```
+     ```c
+     #include "types.h"
+     #include "param.h"
+     #include "memlayout.h"
+     #include "riscv.h"
+     #include "spinlock.h"
+     #include "proc.h"
+     #include "defs.h"
+     
+     #define L3_MAX     49      // 0..49 放 L3（RR）
+     #define L2_MIN     50      // 50..99 放 L2（Priority）
+     #define L2_MAX     99
+     #define L1_MIN     100     // >=100 放 L1（SJF）
+     #define RR_QUANTUM 10      // L3 quantum
+     
+     static struct sortedproclist l1q; // L1：PSJF → 用排序佇列
+     static struct sortedproclist l2q; // L2：Priority → 用排序佇列
+     static struct proclist      l3q;  // L3：RR → 用一般佇列
+     ```
 2. `建立 Queue` : 初始化並建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可。
     - `cmp_l1`：比剩餘時間小的， `cmp(a, b) > 0` 代表 a 應該排在前面。
    - `cmp_l2`：只需比較 `pid`。
