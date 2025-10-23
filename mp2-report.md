@@ -1344,8 +1344,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
 
-### 2. `proc.c`: Timer Interrupt Handling
- 1. `implicityield()` : 
+### 2. `proc.c`
+ 1. `implicityield()` : Timer Interrupt Handling
     - 確認當前 process 狀態
     - L1 (PSJF)：累加 CPU burst 時間
     - L3 (RR)：計算 time quantum
