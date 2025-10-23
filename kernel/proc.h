@@ -109,6 +109,11 @@ struct proc {
 
   // scheduler related
   int startrunningticks;       // ticks when the process started running
+
+  //// added for mp2
+  int rr_budget;     // L3
+  int est_burst;     // L1 Ti, est 初始值
+  int psjf_T;         // L1 T, 真實值
 };
 
 // for mp2
