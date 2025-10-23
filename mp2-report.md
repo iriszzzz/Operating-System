@@ -1324,10 +1324,12 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         - L1 跑但有更短的 L1？
         YES → yield()
         NO → 繼續執行
+    [檢查aging] 有無等太久的程式要提高優先權
+
     ```
 
   為了實現`multi feedback queue scheduler` 實作功能，因此在 `kernel` 新增檔案 `mp2-mfqs.c/ .h`，
-  並在proc.c 中的 `implicity_yield()`排程入口，呼叫新增的函式去做timer interrupt檢查，以及修改在`pushreadylist()`、`popreadylist()`裡的程式確保呼叫的是mfqs規則處理。 
+  並在proc.c 中的排程接口與過程加入新增的函式。 
 
 ### 1. `proc.h`: Process Initialization
  - `rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
@@ -1410,14 +1412,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
       return p;
     }
     ```
- 3. `allocproc(void)`和`freeproc(struct proc *p)`裡也增加，初始設定p狀態＝0，以及釋放後的歸零。
+ 3. `allocproc()`和`freeproc()`：裡增加初始設定p -> `rr_budget / est_burst / psjf_T / ticks_waiting` ＝0，以及釋放後的歸零。
 
-    ```c
-    p->rr_budget     = 0;   
-    p->est_burst     = 0;   
-    p->psjf_T        = 0;
-    p->ticks_waiting = 0;    
-    ```
  4. `void sleep()` 裡加入 [mfqs_update_est_burst(p)](#estburst) ，SJF 需要在一次 CPU burst 結束時更新估計值。
     [sleep()](#sleep) 是 Running → Waiting 的轉移點，此時用剛結束的 last_burst 更新 est_burst，讓下次由`waiting → ready` [wakeup()](#wakeup())
     呼叫 `pushreadylist(p)` 時就能依更新的 est_burst 排入隊伍。 <a id="voidsleep"></a>
