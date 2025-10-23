@@ -1347,10 +1347,6 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 ### 2. `proc.c`
  1. `implicityield()` : Timer Interrupt Handling
     - 確認當前 process 狀態
-    - L1 (PSJF)：累加 CPU burst 時間
-    - L3 (RR)：計算 time quantum
-    - Preemption 檢查
-    - Aging 檢查
     <a id ="proc.c"></a>
     ```c
     // Implicit yield is called on timer interrupt
@@ -1366,7 +1362,10 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
       if (p->priority >= 100){
         p->psjf_T++;
       }
-
+     ```
+    - L1 (PSJF)：累加 CPU burst 時間
+    - L3 (RR)：每次扣 1 time quantum，並檢查是否用完 timeslice
+     ```c
       //// L3 - RR
       mfqs_rr_on_tick(p);
       if (mfqs_rr_timeslice_up(p)) {
@@ -1387,10 +1386,14 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
           yield();
         }
       }
+    ```
+    - Preemption 檢查：確認當前執行的 p 外，是否有更高優先 level queue 的行程要插隊。如果 p 已經是在 L1 則檢查是否有更新後更短的執行工作要插隊。 
+    ```c
 
       aging(); // Add, Aging check
     }
     ```
+     - [Aging 檢查](#6-mp2-mfqsc-aging-implementation) 
  3. `proclistinit()`：加入 [mfqs_init()](#mfqs_init) 指令，初始化 mfqs 的三種佇列
  2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示<a id="pushpop"></a>，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
     ```c
