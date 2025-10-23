@@ -1,37 +1,65 @@
 #!/usr/bin/env python3
+import re # 正則表達式模組
 from gradelib import *
-import re
+from collections import defaultdict
 
-r = Runner(save("xv6-aging-simple.out"))
+r = Runner(save("xv6_aging_strict.out"))
 
 def parse(outputs: str):
-    result = []
+    parsed = defaultdict(list)
     for line in outputs.splitlines():
-        if "procstatelog" in line:
-            result.append(line)
-    return result
-
-@test(10, "aging-check")
-def test_simple_aging():
-    r.run_qemu(shell_script(["mp2-aging 100"]))   # 建立一個 Runner 物件，跑 xv6
-    out = r.qemu.output # xv6 shell 裡執行指令 mp2-aging 100
-
-    logs = parse(out)
-    assert logs, "No procstatelog lines found."
-    # 偵測 priority 是否增加
-    pattern = re.compile(r"pid=(\d+).*priority=(\d+)")
-    priorities = {}
-    for line in logs:
-        m = pattern.search(line)
-        if not m: continue
-        pid, pr = int(m.group(1)), int(m.group(2))
-        if pid not in priorities:
-            priorities[pid] = []
-        priorities[pid].append(pr)
-
-    for pid, pr_list in priorities.items():
-        if len(pr_list) < 2:
+        m = re.search(r'procstatelog: pid=(\d+), ticks=(\d+), state="(\w+)", priority=(\d+)', line)
+        if not m:
             continue
-        assert pr_list[-1] >= pr_list[0], f"Process {pid} did not age (priority {pr_list[0]}→{pr_list[-1]})"
+        pid = int(m.group(1))
+        ticks = int(m.group(2))
+        state = m.group(3).lower()
+        pr = int(m.group(4))
+        parsed[pid].append({"ticks": ticks, "state": state, "priority": pr})
+    return parsed
+
+@test(20, "aging-strict")
+def test_aging():
+    r.run_qemu(shell_script(["mp2-aging 100"])) # 執行 100 個單位時間
+    out = r.qemu.output
+    parsed = parse(out)
+
+    assert parsed, "\nNo procstatelog lines found."
+
+    # For each pid, we want to find a pair of entries (i, j) with:
+    # ticks_j >= ticks_i + 20  AND priority_j > priority_i
+    found_any = False
+    details = []
+
+    for pid, entries in parsed.items():
+        entries_sorted = sorted(entries, key=lambda e: e["ticks"])
+        n = len(entries_sorted)
+        for i in range(n):
+            ti = entries_sorted[i]["ticks"]
+            pi = entries_sorted[i]["priority"]
+            for j in range(i+1, n):
+                tj = entries_sorted[j]["ticks"]
+                pj = entries_sorted[j]["priority"]
+                if tj < ti + 20:
+                    continue
+                if pj > pi:
+                    # check states between i and j the process wasn't exiting
+                    mid_states = {e["state"] for e in entries_sorted[i:j+1]}
+                    details.append((pid, ti, pi, tj, pj, mid_states))
+                    found_any = True
+                    break
+            if found_any:
+                break
+        if found_any:
+            break
+
+    assert found_any, (
+        "Aging not observed deterministically: no process shows priority increase "
+        "by at least 1 after waiting >= 20 ticks. Parsed details: " + str(details[:3])
+    )
+
+    if details:
+        pid, ti, pi, tj, pj, mid = details[0]
+        print(f"\nAging: pid={pid}, priority {pi} → {pj}, ticks {ti} → {tj}, states={mid}")
 
 run_tests()

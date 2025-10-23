@@ -1723,32 +1723,54 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
 - aging: 一個 process 長時間沒被排程，它的 priority 是否會逐漸提高
 
-```c
-@test(10, "aging-check")
-def test_simple_aging():
-    r.run_qemu(shell_script(["mp2-aging 100"]))   # 建立一個 Runner 物件，跑 xv6
-    out = r.qemu.output # 在 xv6 shell 裡執行指令 mp2-aging 100
+  <details>
+  <summary><span style="color:orange;">regex</span></summary>
+    用 regex `pid=(\d+).*priority=(\d+)` 搜尋每一行 (正則表達式 Regex 是一 字串匹配語法，能在一段文字中快速找出想要的部分)
+    (\d+)：代表一串數字、.*：代表中間有任意字元（例如 state=SLEEPING）。
+    所以能從這樣的文字抓到：procstatelog: pid=3 state=SLEEPING priority=11 $\to$ pid = 3、priority = 11 
+  </details> 
 
-    logs = parse(out)
-    assert logs, "No procstatelog lines found."
-    # 偵測 priority 是否增加
-    pattern = re.compile(r"pid=(\d+).*priority=(\d+)")
-    priorities = {}
-    for line in logs:
-        m = pattern.search(line)
-        if not m: continue
-        pid, pr = int(m.group(1)), int(m.group(2))
-        if pid not in priorities:
-            priorities[pid] = []
-        priorities[pid].append(pr)
 
-    for pid, pr_list in priorities.items():
-        if len(pr_list) < 2:
-            continue
-        assert pr_list[-1] >= pr_list[0], f"Process {pid} did not age (priority {pr_list[0]}→{pr_list[-1]})"
+  對每一個 process，根據 ticks 排序對每一筆紀錄做成對比較：i = 起始點；j = 比 i 晚的某筆log，檢查是否相隔至少 20 ticks、是否 priority 變大
+  `mid_states` 收集從 ticks_i 到 ticks_j 之間這段時間 process 的所有狀態
 
-run_tests()
-```
+    ```py
+    @test(20, "aging-strict")
+    def test_aging():
+        r.run_qemu(shell_script(["mp2-aging 100"])) # 執行 100 個單位時間
+        out = r.qemu.output
+        parsed = parse(out)
+
+        assert parsed, "\nNo procstatelog lines found."
+
+        found_any = False
+        details = []
+
+        for pid, entries in parsed.items(): # 主要邏輯
+            entries_sorted = sorted(entries, key=lambda e: e["ticks"])
+            n = len(entries_sorted)
+            for i in range(n):
+                ti = entries_sorted[i]["ticks"]
+                pi = entries_sorted[i]["priority"]
+                for j in range(i+1, n):
+                    tj = entries_sorted[j]["ticks"]
+                    pj = entries_sorted[j]["priority"]
+                    if tj < ti + 20:
+                        continue
+                    if pj > pi:
+                        # check states between i and j the process wasn't exiting
+                        mid_states = {e["state"] for e in entries_sorted[i:j+1]}
+                        details.append((pid, ti, pi, tj, pj, mid_states))
+                        found_any = True
+                        break
+                if found_any:
+                    break
+            if found_any:
+                break
+                ...
+
+    run_tests()
+    ```
 
 ## Contributions
 
