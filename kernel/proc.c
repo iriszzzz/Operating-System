@@ -186,7 +186,8 @@ freeproc(struct proc *p)
   ////
   p->rr_budget     = 0;   
   p->est_burst     = 0;   
-  p->psjf_T        = 0;   
+  p->psjf_T        = 0;
+  p->ticks_waiting = 0;   
 }
 
 // Create a user page table for a given process, with no user memory,
