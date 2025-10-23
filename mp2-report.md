@@ -1391,11 +1391,7 @@ allocproc(void)
       aging(); // Add, Aging check
     }
     ```
-
-2. `pushreadylist()`、`popreadylist()`：
-    
-    在`yield()`裡被呼叫的函示，確保修改使用 `mfqs`規則，實作在 `mfqs.c`檔裡。
-  
+ 2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示，確保修改使用 `mfqs`規則，實作在 `mfqs.c`檔裡。
     ```c
     void
     pushreadylist(struct proc *p){
@@ -1410,31 +1406,24 @@ allocproc(void)
       return p;
     }
     ```
+ 3. `allocproc(void)`和`freeproc(struct proc *p)`裡也增加，初始設定p三狀態＝0，以及釋放後的歸零。
 
+    ```c
+    p->rr_budget     = 0;   
+    p->est_burst     = 0;   
+    p->psjf_T        = 0;   
+    ```
+ 4. `void sleep(void *chan, struct spinlock *lk)` SJF 需要在「一次 CPU burst 結束時」更新估計值。sleep() 是 Running → SLEEPING（Waiting） 的轉移點，代表「這次 CPU burst 結束了（去等 I/O/事件）」。此時立刻呼叫
+mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下次入隊（特別是 L1）能用更準的短工時預測排序。
+如果不在 sleep() 更新，I/O-bound 程序的短 burst 特色就抓不到，回到就緒佇列時排序會不準，SJF 效果打折。
+放在這裡的關鍵是：在把狀態設為 SLEEPING、從 CPU 退場前完成更新，之後再由 wakeup → ready 入隊時就能正確依 est_burst 排到前面。
 
-### 2. `proc.h`: Process Initialization
-
-  `rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
-
-      ```c
-      static struct proc*
-      allocproc(void)
-      {
-        ...
-        p->rr_budget = 0;
-        p->est_burst = 0;   // t0 = 0
-        p->psjf_T    = 0;   // T 初始 0
-        p->ticks_waiting = 0; // Added for aging
-        ...
-      }
-      ```
 
 ### 3. `mp2-mfqs.h`: Function Prototypes
 
 `mfqs.h` 可分成三個區塊，提供外部程式`proc.c`可呼叫宣告的函式。
 
-1. `Queue Management`
-
+ 1. `Queue Management`
     ```c
     // mp2_mfqs.h
 
@@ -1445,17 +1434,14 @@ allocproc(void)
     struct proc* mfqs_dequeue(void);      // 依序拿出要跑的 p 給 scheduler
     int mfqs_l1_nonempty(void);           // 確認 L1 是否有剩餘的未完成process
     int mfqs_l2_nonempty(void);           // 確認 L2 是否有剩餘的未完成process
-
+    
     ```
-2. `L1 SJF rules`
-
+ 2. `L1 SJF rules`
     ```c
     int mfqs_l1_top_preempt(struct proc *p);  // 檢查 L1 的 top 是否要preempt
     int mfqs_update_est_burst(struct proc *p);// 更新 L1 p 的 approximated burst time
     ```
-
-3. `L3 RR rules`
-
+ 3. `L3 RR rules`
     ```c
     void mfqs_rr_on_tick(struct proc *p); // round robin 扣 ticks
     int mfqs_rr_timeslice_up(struct proc *p); // 檢查 rr 狀態下的time slice是否用完
@@ -1467,29 +1453,30 @@ allocproc(void)
 
   1. 初始化設定需要的資料結構以及函式
 
-      ```c
-      #include "types.h"
-      #include "param.h"
-      #include "memlayout.h"
-      #include "riscv.h"
-      #include "spinlock.h"
-      #include "proc.h"
-      #include "defs.h"
-      
-      #define L3_MAX     49      // 0..49 放 L3（RR）
-      #define L2_MIN     50      // 50..99 放 L2（Priority）
-      #define L2_MAX     99
-      #define L1_MIN     100     // >=100 放 L1（SJF）
-      #define RR_QUANTUM 10      // L3 quantum
-      
-      static struct sortedproclist l1q; // L1：PSJF → 用排序佇列
-      static struct sortedproclist l2q; // L2：Priority → 用排序佇列
-      static struct proclist      l3q;  // L3：RR → 用一般佇列
-      ```
-  2. `建立 Queue` : 初始化並建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可
+    ```c
+    #include "types.h"
+    #include "param.h"
+    #include "memlayout.h"
+    #include "riscv.h"
+    #include "spinlock.h"
+    #include "proc.h"
+    #include "defs.h"
+    
+    #define L3_MAX     49      // 0..49 放 L3（RR）
+    #define L2_MIN     50      // 50..99 放 L2（Priority）
+    #define L2_MAX     99
+    #define L1_MIN     100     // >=100 放 L1（SJF）
+    #define RR_QUANTUM 10      // L3 quantum
+    
+    static struct sortedproclist l1q; // L1：PSJF → 用排序佇列
+    static struct sortedproclist l2q; // L2：Priority → 用排序佇列
+    static struct proclist      l3q;  // L3：RR → 用一般佇列
+    ```
+2. `建立 Queue` : 初始化並建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可。
+    - `cmp_l1`：比剩餘時間小的， `cmp(a, b) > 0` 代表 a 應該排在前面。
+   - `cmp_l2`：只需比較 `pid`。
 
-  - `cmp_l1`：比剩餘時間小的， `cmp(a, b) > 0` 代表 a 應該排在前面
-  - `cmp_l2`：只需比較 `pid`
+
 
     ```c
     static int cmp_l1(struct proc *a, struct proc *b) {
@@ -1499,12 +1486,12 @@ allocproc(void)
       if (remain_a == remain_b) return (b->pid - a->pid);  // pid 小者先
       return remain_b - remain_a;  // 剩餘時間小者先           
     }
-
+    
     static int cmp_l2(struct proc *a, struct proc *b) {
       if (a->priority == b->priority) return (b->pid - a->pid); // pid 小者先 → 正數
       return a->priority - b->priority;                         // a 比 b 大 → 正數
     }
-
+    
     // 準備三條隊伍（L1/L2/L3）
     void mfqs_init(void){
       initsortedproclist(&l1q, cmp_l1);
@@ -1566,16 +1553,16 @@ allocproc(void)
     ```
   4. `mfqs_l2_nonempty()`, `mfqs_l1_nonempty()`: 判斷是否有更高層 process 應該搶佔 (檢查序列是否為空)。因為queue的宣告是在mfqs.c裡，所以在proc.c 中無法直接管理proclist，才加了這兩個可被呼叫函式
 
-      ```c  
-      // l2
-      int mfqs_l2_nonempty(void) {
-          return sizesortedproclist(&l2q) > 0;
-      }
-      // L1 preempt
-      int mfqs_l1_nonempty(void) {
-          return sizesortedproclist(&l1q) > 0;
-      }
-      ```
+     ```c
+     // l2
+     int mfqs_l2_nonempty(void) {
+         return sizesortedproclist(&l2q) > 0;
+     }
+     // L1 preempt
+     int mfqs_l1_nonempty(void) {
+         return sizesortedproclist(&l1q) > 0;
+     }
+     ```
 
 
 ### 5. `mp2-mfqs.c`: Queue Time Records
