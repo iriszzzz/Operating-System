@@ -1334,6 +1334,8 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
   為了實現`multi feedback queue scheduler` 實作功能，因此在 `kernel` 新增檔案 `mp2-mfqs.c/ .h`，
   並在 `proc.c` 中的排程接口與過程加入新增的函式。 
 
+  <p align="center"><img src="flow.png" alt="Diagram of Process State" width="500"></p>
+
 ### 1. `proc.c / proc.h`: 
  1. `proc.h`：Process Initialization
       - `rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
@@ -1700,7 +1702,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 | 實作 Scheduler 主邏輯 | V | V |
 | Aging、Preemption 機制|   | V | 
 | Multilevel Feedback Queue 實作 | V |   |
-| 撰寫報告 | Trace Code timer interrupt、 mapping relationship、L1/L2/L3、主邏輯實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
+| 撰寫報告 | Trace Code timer interrupt、 mapping relationship、主邏輯、L1/L2/L3實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
 | Test report |  |  |
 | Bonus |  |   |
 
