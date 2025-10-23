@@ -5,9 +5,9 @@
 ## Table of contents
 
 - [Trace Code](#trace-code)
-  - [1. `Timer Interrupt Handling and Context Switching`](#timer-interrupt-handling-and-context-switching)
-  - [2. `Mapping xv6 Process States`](#mapping-xv6-process-states)
-  - [3. `Process State Transitions and Queue Interactions`](#process-state-transitions-and-queue-interactions)
+  - [1. Timer Interrupt Handling and Context Switching](#timer-interrupt-handling-and-context-switching)
+  - [2. Mapping xv6 Process States](#mapping-xv6-process-states)
+  - [3. Process State Transitions and Queue Interactions](#process-state-transitions-and-queue-interactions)
 - [Implementation](#implementation)
   - [2.]()
   - [1.]()
@@ -764,23 +764,23 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
       > sepc 是 RISC-V 架構中的一個特殊寄存器，它表示 “Exception Program Counter”異常程序計數器。當發生異常或中斷時，處理器會將當前正在執行的指令的地址保存到 sepc 中，以便異常處理完成後，可以繼續從該位置返回執行
 
-        ```c
-        void 
-        kerneltrap()
-        {
-          int which_dev = 0;
-          uint64 sepc = r_sepc(); // 獲取當前指令指標
-          uint64 sstatus = r_sstatus(); // 狀態寄存器
-          uint64 scause = r_scause(); // 中斷原因
-          ...
-          // 如果這是一個 Timer Interrupt，並且當前狀態是 RUNNING，則進行上下文切換
-          if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
-            implicityield();
+      ```c
+      void 
+      kerneltrap()
+      {
+        int which_dev = 0;
+        uint64 sepc = r_sepc(); // 獲取當前指令指標
+        uint64 sstatus = r_sstatus(); // 狀態寄存器
+        uint64 scause = r_scause(); // 中斷原因
+        ...
+        // 如果這是一個 Timer Interrupt，並且當前狀態是 RUNNING，則進行上下文切換
+        if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+          implicityield();
 
-          w_sepc(sepc); // 恢復 trap 寄存器，以便繼續使用 kernelvec.S 的 sepc 指令
-          w_sstatus(sstatus);
-        }
-        ```
+        w_sepc(sepc); // 恢復 trap 寄存器，以便繼續使用 kernelvec.S 的 sepc 指令
+        w_sstatus(sstatus);
+      }
+      ```
 
     b. `kernel/trap.c/usertrap()`
 
@@ -1643,23 +1643,21 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
             removesortedproclist(&l1q, pn);
             freeproclistnode(pn);
           }
-        } else if (level == 2) {
-          pn = findsortedproclist(&l2q, p);
-          if (pn) {
-            removesortedproclist(&l2q, pn);
-            freeproclistnode(pn);
-          }
-        } else {
-          pn = findproclist(&l3q, p);
-          if (pn) {
-            removeproclist(&l3q, pn);
-            freeproclistnode(pn);
-          }
-        }
+        } ...
       }
       ```
 
 ## Test report
+
+### 1. ./grade-mp2-public 測試
+<p align="center"><img src="grade-mp2-public.png" alt="Diagram of Process State" width="300"></p>
+
+- test_benchmark: 跑一基本負載 mp2-benchmark，取得 workload 參數，讓後面 test 知道該用哪個 workload
+- test_psjf: 測試 Preemptive Shortest Job First (PSJF)，檢查 PSJF preemption，最短剩餘時間的 process 優先執行，若有可以會 preempt 較長的
+- test_priority: 驗證 priority scheduling 是否依 priority 大小決定執行順序
+- test_rr: 驗證 RR quantum 是否正確實作
+- test_aging: 驗證 aging 機制是否能讓低優先序的 7 最終被提升並完成工作，同時高優先序的行程不被干擾
+- test_preempt_a/b/c: 驗證 schedular 能在不同情況下正確執行 preempt 與切換
 
 ## Contributions
 
@@ -1670,5 +1668,6 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 | 實作 Scheduler 主邏輯、Aging 機制、Preemption 機制|   | V | 
 | Multilevel Feedback Queue (L1, L2, L3) 實作 | V |   |
 | 撰寫報告 | Trace Code timer interrupt、 mapping relationship、L1/L2/L3 實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
+| Test report |  |  |
 | Bonus |  |   |
 
