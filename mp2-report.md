@@ -1306,6 +1306,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
 
 ## Implementation
+
  - 流程圖：
     ```
     Timer Interrupt
@@ -1326,42 +1327,43 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     ```
 
 ### 1. `kernel/proc.c`
+  這個檔案是 kernel 中處理程序狀態轉換和排程決策的地方，
 
-```c
-void
-implicityield(void)
-{
-  struct proc *p = myproc();
-  if (!p) return;
-  if (p->state != RUNNING) return;
-  
-  //// L1 - PSJF累加ticks
-  if (p->priority >= 100){
-    p->psjf_T++;
-  }
+    ```c
+    void
+    implicityield(void)
+    {
+      struct proc *p = myproc();
+      if (!p) return;
+      if (p->state != RUNNING) return;
+      
+      //// L1 - PSJF累加ticks
+      if (p->priority >= 100){
+        p->psjf_T++;
+      }
 
-  //// L3 - RR
-  mfqs_rr_on_tick(p);
-  if (mfqs_rr_timeslice_up(p)) {
-    yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
-  }
+      //// L3 - RR
+      mfqs_rr_on_tick(p);
+      if (mfqs_rr_timeslice_up(p)) {
+        yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
+      }
 
-  //// preempt condition
-  if (p->priority < 100 && mfqs_l1_nonempty()) {
-    yield();
-    return;
-  }
-  if (p->priority < 50 && mfqs_l2_nonempty()) {
-    yield();
-    return;
-  }
-  if (p->priority >= 100 && p->priority < 150) {
-    if (mfqs_l1_top_preempt(p)) {
-      yield();
+      //// preempt condition
+      if (p->priority < 100 && mfqs_l1_nonempty()) {
+        yield();
+        return;
+      }
+      if (p->priority < 50 && mfqs_l2_nonempty()) {
+        yield();
+        return;
+      }
+      if (p->priority >= 100 && p->priority < 150) {
+        if (mfqs_l1_top_preempt(p)) {
+          yield();
+        }
+      }
     }
-  }
-}
-```
+    ```
 
 ### 2. `kernel/proc.h`
 ```c
@@ -1532,6 +1534,81 @@ void mfqs_update_est_burst(struct proc *p){ //only at Running -> Waiting
 ###
 ###
 
+<p align="center"><img src="flow.png" alt="Diagram of Process State" width="500"></p>
+
+### 1. `proc.c`: Timer Interrupt Handling
+- 確認當前 process 狀態
+- L1 (PSJF)：累加 CPU burst 時間
+- L3 (RR)：計算 time quantum
+- Preemption 檢查
+- Aging 檢查
+
+    ```c
+    // Implicit yield is called on timer interrupt
+    void
+    implicityield(void)
+    {
+      struct proc *p = myproc();
+      // if(ticks - p->startrunningticks >= 1) {
+      //   // yield round robin scheduling
+      //   // actually ticks - p->startrunningticks should be 1
+      //   yield();
+      if (!p) return;
+      if (p->state != RUNNING) return;
+      
+      //// L1 - PSJF累加ticks
+      if (p->priority >= 100){
+        p->psjf_T++;
+      }
+
+      //// L3 - RR
+      mfqs_rr_on_tick(p);
+      if (mfqs_rr_timeslice_up(p)) {
+        yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
+      }
+
+      //// preempt condition
+      if (p->priority < 100 && mfqs_l1_nonempty()) {
+        yield();
+        return;
+      }
+      if (p->priority < 50 && mfqs_l2_nonempty()) {
+        yield();
+        return;
+      }
+      if (p->priority >= 100 && p->priority < 150) {
+        if (mfqs_l1_top_preempt(p)) {
+          yield();
+        }
+      }
+
+      aging(); // Add, Aging check
+    }
+    ```
+
+
+### 2. `proc.c`: Process Initialization
+`rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
+```c
+static struct proc*
+allocproc(void)
+{
+  ...
+  p->rr_budget = 0;
+  p->est_burst = 0;   // t0 = 0
+  p->psjf_T    = 0;   // T 初始 0
+  p->ticks_waiting = 0; // Added for aging
+  ...
+}
+```
+
+### 3. `mp2-mfqs.c`: Queue Management
+
+### 4. `mp2-mfqs.c`: Preemption Logic
+
+### 5. `mp2-mfqs.c`: L1 SJF Time Estimation
+
+### 6. `mp2-mfqs.c`: Aging Implementation
 
 ## Contribution
 
