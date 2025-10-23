@@ -871,7 +871,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     系統呼叫入口，user process呼叫 sleep() 時，kernel 接收到的系統呼叫處理函數。它通常負責從user space 讀取參數（像是要休眠的 tick 數），並呼叫 kernel 的 sleep()
 
 2. `kernel/proc.c/sleep()`
-
+    <a id="sleep"></a>
     進入 SLEEPING 狀態之前或之後，sleep 函數必須釋放用來保護該 process 的鎖。因為程序在睡眠時必須釋放資源，讓其他程序可以完成事件
 
     ```c
@@ -1080,7 +1080,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
       }
       ```
   2. `kernel/proc.c/wakeup()`
-
+      <a id="wakeup()"></a>
       叫醒所有在 chan 通道上睡覺的 process
 
         ```c
@@ -1330,28 +1330,28 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
   並在proc.c 中的 `implicity_yield()`排程入口，呼叫新增的函式去做timer interrupt檢查，以及修改在`pushreadylist()`、`popreadylist()`裡的程式確保呼叫的是mfqs規則處理。 
 
 ### 1. `proc.h`: Process Initialization
-`rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
-```c
-static struct proc*
-allocproc(void)
-{
-  ...
-  p->rr_budget = 0;
-  p->est_burst = 0;   // t0 = 0
-  p->psjf_T    = 0;   // T 初始 0
-  p->ticks_waiting = 0; // Added for aging
-  ...
-}
-```
+ - `rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
+    ```c
+    static struct proc*
+    allocproc(void)
+    {
+      ...
+      p->rr_budget = 0;
+      p->est_burst = 0;   // t0 = 0
+      p->psjf_T    = 0;   // T 初始 0
+      p->ticks_waiting = 0; // Added for aging
+      ...
+    }
+    ```
 
-### 1. `proc.c`: Timer Interrupt Handling
+### 2. `proc.c`: Timer Interrupt Handling
  1. `implicityield()` : 
     - 確認當前 process 狀態
     - L1 (PSJF)：累加 CPU burst 時間
     - L3 (RR)：計算 time quantum
     - Preemption 檢查
     - Aging 檢查
-
+    <a id ="proc.c"></a>
     ```c
     // Implicit yield is called on timer interrupt
     void
@@ -1391,32 +1391,57 @@ allocproc(void)
       aging(); // Add, Aging check
     }
     ```
- 2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示，確保修改使用 `mfqs`規則，實作在 `mfqs.c`檔裡。
+ 3. `proclistinit()`：加入 [mfqs_init()](#mfqs_init) 指令，初始化 mfqs 的三種佇列
+ 2. `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
     ```c
     void
     pushreadylist(struct proc *p){
-      mfqs_enqueue(p);
+      mfqs_enqueue(p); // 新增
     }
 
     struct proc*
     popreadylist(){
       struct proc *p;
-      p = mfqs_dequeue();
+      p = mfqs_dequeue(); // 新增
       if(p == 0) return 0;
       return p;
     }
     ```
- 3. `allocproc(void)`和`freeproc(struct proc *p)`裡也增加，初始設定p三狀態＝0，以及釋放後的歸零。
+ 3. `allocproc(void)`和`freeproc(struct proc *p)`裡也增加，初始設定p狀態＝0，以及釋放後的歸零。
 
     ```c
     p->rr_budget     = 0;   
     p->est_burst     = 0;   
-    p->psjf_T        = 0;   
+    p->psjf_T        = 0;
+    p->ticks_waiting = 0;    
     ```
- 4. `void sleep(void *chan, struct spinlock *lk)` SJF 需要在「一次 CPU burst 結束時」更新估計值。sleep() 是 Running → SLEEPING（Waiting） 的轉移點，代表「這次 CPU burst 結束了（去等 I/O/事件）」。此時立刻呼叫
-mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下次入隊（特別是 L1）能用更準的短工時預測排序。
-如果不在 sleep() 更新，I/O-bound 程序的短 burst 特色就抓不到，回到就緒佇列時排序會不準，SJF 效果打折。
-放在這裡的關鍵是：在把狀態設為 SLEEPING、從 CPU 退場前完成更新，之後再由 wakeup → ready 入隊時就能正確依 est_burst 排到前面。
+ 4. `void sleep()` 裡加入 [mfqs_update_est_burst(p)](#estburst) ，SJF 需要在一次 CPU burst 結束時更新估計值。
+    [sleep()](#sleep) 是 Running → Waiting 的轉移點，此時用剛結束的 last_burst 更新 est_burst，讓下次由`waiting → ready` [wakeup()](#wakeup())
+    呼叫 `pushreadylist(p)` 時就能依更新的 est_burst 排入隊伍。 <a id="voidsleep"></a>
+
+    ```c
+    void
+    sleep(void *chan, struct spinlock *lk)
+    {
+      struct proc *p = myproc();
+      struct channel *cn;
+      struct proclistnode *pn;
+      acquire(&p->lock);  //DOC: sleeplock1
+      if((cn = findchannel(chan)) == 0 && (cn = allocchannel(chan)) == 0) {
+        panic("sleep: allocchannel");
+      }
+      release(lk); // 釋放鎖，防止 deadlock
+
+      //// Running→Waiting，est_burst才更新
+      mfqs_update_est_burst(p);
+      
+      ...
+      pushbackproclist(&cn->pl, pn);
+      release(&cn->lock);
+      sched(); // schedular
+      ...
+    }
+    ```
 
 
 ### 3. `mp2-mfqs.h`: Function Prototypes
@@ -1472,7 +1497,8 @@ mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下�
      static struct sortedproclist l2q; // L2：Priority → 用排序佇列
      static struct proclist      l3q;  // L3：RR → 用一般佇列
      ```
-2. `建立 Queue` : 初始化並建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可。
+     <a id="mfqs_init"></a>
+2. `建立 Queue` : 佇列初始化，建立 `priority queue` 用 `initsortedproclist(pl, cmp)` 指令，會把「排序規則」用函式指標 cmp 傳進去，之後所有插入到這個 queue 的節點都會依 cmp 的結果保持順序。 而 L3：用一般佇列 `initproclist(pl)` 即可。
     - `cmp_l1`：比剩餘時間小的， `cmp(a, b) > 0` 代表 a 應該排在前面。
    - `cmp_l2`：只需比較 `pid`。
 
@@ -1551,7 +1577,7 @@ mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下�
     }
     
     ```
-  4. `mfqs_l2_nonempty()`, `mfqs_l1_nonempty()`: 判斷是否有更高層 process 應該搶佔 (檢查序列是否為空)。因為queue的宣告是在mfqs.c裡，所以在proc.c 中無法直接管理proclist，才加了這兩個可被呼叫函式
+  4. `mfqs_l2_nonempty()`, `mfqs_l1_nonempty()`: 判斷是否有更高層 process 應該搶佔 (檢查序列是否為空)。因為queue的宣告是在mfqs.c裡，所以在[proc.c](#proc.c) 中無法直接管理proclist，才加了這兩個可被呼叫函式
 
      ```c
      // l2
@@ -1568,9 +1594,10 @@ mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下�
 ### 5. `mp2-mfqs.c`: Queue Time Records
 
 1. `L3: round robin`
+   - `mfqs_rr_on_tick`： 扣 1 quantum
+   - `mfqs_rr_timeslice_up`： 檢查 time slice 是否用完 
 
     ```c
-    // L3：每個 tick 扣一次量子；用完要讓位（回 ready）
     void mfqs_rr_on_tick(struct proc *p) {
       if (level_of(p) == 3 && p->rr_budget > 0) p->rr_budget--;
     }
@@ -1580,7 +1607,9 @@ mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下�
     ```
 
 2. `L1: PSJF`
-
+   - `mfqs_l1_top_preempt`：指令 `cmptopsortedproclist( *spl, *p)` 使用排序佇列 spl 的 cmp 規則，比較 proc p 跟目前佇列第一位的優先權。若原本第一位更優先則 return 1
+   <a id="estburst"></a>
+   - `mfqs_update_est_burst`：更新 t_i 值 `t_i = ⌊(T + t_{i-1})/2⌋`，[sleep()](#voidsleep) 時呼叫
     ```c
     int mfqs_l1_top_preempt(struct proc *p) {
         int r = cmptopsortedproclist(&l1q, p);
@@ -1666,9 +1695,10 @@ mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下�
 | :--------------- | :--------------- | :------------ |
 | Trace Code timer interrupt, mapping relationship  | V |  |
 | Trace Code Process State Transitions  |   | V | 
-| 實作 Scheduler 主邏輯、Aging 機制、Preemption 機制|   | V | 
-| Multilevel Feedback Queue (L1, L2, L3) 實作 | V |   |
-| 撰寫報告 | Trace Code timer interrupt、 mapping relationship、L1/L2/L3 實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
+| 實作 Scheduler 主邏輯 | V | V |
+| Aging、Preemption 機制|   | V | 
+| Multilevel Feedback Queue 實作 | V |   |
+| 撰寫報告 | Trace Code timer interrupt、 mapping relationship、L1/L2/L3、主邏輯實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
 | Test report |  |  |
 | Bonus |  |   |
 
