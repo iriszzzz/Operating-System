@@ -527,6 +527,20 @@ xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並
   為了實現`multi feedback queue scheduler` 實作功能，因此在 `kernel` 新增檔案 `mp2-mfqs.c/ .h`，
   並在proc.c 中的 `implicity_yield()`排程入口，呼叫新增的函式去做timer interrupt檢查，以及修改在`pushreadylist()`、`popreadylist()`裡的程式確保呼叫的是mfqs規則處理。 
 
+### 1. `proc.h`: Process Initialization
+`rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
+```c
+static struct proc*
+allocproc(void)
+{
+  ...
+  p->rr_budget = 0;
+  p->est_burst = 0;   // t0 = 0
+  p->psjf_T    = 0;   // T 初始 0
+  p->ticks_waiting = 0; // Added for aging
+  ...
+}
+```
 
 ### 1. `proc.c`: Timer Interrupt Handling
  1. `implicityield()` : 
@@ -590,22 +604,18 @@ xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並
       return p;
     }
     ```
+ 3. `allocproc(void)`和`freeproc(struct proc *p)`裡也增加，初始設定p三狀態＝0，以及釋放後的歸零。
 
+    ```c
+    p->rr_budget     = 0;   
+    p->est_burst     = 0;   
+    p->psjf_T        = 0;   
+    ```
+ 4. `void sleep(void *chan, struct spinlock *lk)` SJF 需要在「一次 CPU burst 結束時」更新估計值。sleep() 是 Running → SLEEPING（Waiting） 的轉移點，代表「這次 CPU burst 結束了（去等 I/O/事件）」。此時立刻呼叫
+mfqs_update_est_burst(p)：用剛結束的 last_burst 更新 est_burst，讓下次入隊（特別是 L1）能用更準的短工時預測排序。
+如果不在 sleep() 更新，I/O-bound 程序的短 burst 特色就抓不到，回到就緒佇列時排序會不準，SJF 效果打折。
+放在這裡的關鍵是：在把狀態設為 SLEEPING、從 CPU 退場前完成更新，之後再由 wakeup → ready 入隊時就能正確依 est_burst 排到前面。
 
-### 2. `proc.h`: Process Initialization
-`rr_budget` L3 的 RR time quantum。`est_burst`, `psjf_T` L1 用於預估 CPU burst time。`ticks_waiting` 儲存 Aging 等待時間計數
-```c
-static struct proc*
-allocproc(void)
-{
-  ...
-  p->rr_budget = 0;
-  p->est_burst = 0;   // t0 = 0
-  p->psjf_T    = 0;   // T 初始 0
-  p->ticks_waiting = 0; // Added for aging
-  ...
-}
-```
 
 ### 3. `mp2-mfqs.h`: Function Prototypes
 
@@ -777,7 +787,3 @@ void mfqs_update_est_burst(struct proc *p){ //only at Running -> Waiting
 ```
 
 ### 6. `mp2-mfqs.c`: Aging Implementation
-
-
-
- 
