@@ -1688,7 +1688,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 | 實作 Scheduler 主邏輯 | V | V |
 | Aging、Preemption 機制|   | V | 
 | Multilevel Feedback Queue 實作 | V |   |
-| 撰寫報告 | Trace Code timer interrupt、 mapping relationship、主邏輯、L1/L2/L3實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
-| Test report |  |  |
-| Bonus |  |   |
+| 撰寫報告 | Trace Code timer interrupt、 mapping relationship、L1/L2/L3、主邏輯實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
+| Test report |  | V |
+| Bonus |  | aging |
 
