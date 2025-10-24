@@ -1567,7 +1567,6 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
 2. `mfqs_remove()`
-
     確認 process 位於哪一層（`level_of(p)`）、在該層對應的 queue 中尋找、並將它移除。最後釋放該節點的記憶體
 
       ```c
@@ -1584,11 +1583,40 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         } ...
       }
       ```
+3. `findsortedproclist()`
+
+    在已排序的 proclist 裡面，尋找指向指定 proc 的節點
+
+    ```c
+    struct proclistnode* findsortedproclist(struct sortedproclist *pl, struct proc *p) { // Add
+      struct proclistnode *cur = pl->head->next;
+      while (cur != pl->tail) {
+        if (cur->p == p)
+          return cur;
+        cur = cur->next;
+      }
+      return 0;
+    }
+    ```
+
+4. `removesortedproclist()`
+
+    從 linked list 中移除一個節點 (`pn`)
+
+    ```c
+    void removesortedproclist(struct sortedproclist *pl, struct proclistnode *pn) { // Add
+      if (!pn || pn == pl->head || pn == pl->tail)
+        return;
+      pn->prev->next = pn->next;
+      pn->next->prev = pn->prev;
+      pl->size--;
+    }
+    ```
 
 ## Test report
 
 ### 1. ./grade-mp2-public 測試
-<p align="center"><img src="grade-mp2-public.png" alt="Diagram of Process State" width="300"></p>
+<p align="center"><img src="grade-mp2-public.png" alt="Diagram of Process State" width="400"></p>
 
 - test_benchmark: 跑一基本負載 mp2-benchmark，取得 workload 參數，讓後面 test 知道該用哪個 workload
 - test_psjf: 測試 Preemptive Shortest Job First (PSJF)，檢查 PSJF preemption，最短剩餘時間的 process 優先執行，若有可以會 preempt 較長的
@@ -1596,6 +1624,59 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 - test_rr: 驗證 RR quantum 是否正確實作
 - test_aging: 驗證 aging 機制是否能讓低優先序的 7 最終被提升並完成工作，同時高優先序的行程不被干擾
 - test_preempt_a/b/c: 驗證 schedular 能在不同情況下正確執行 preempt 與切換
+
+### 2. ./grade-mp2-bonus 測試
+
+- aging: 一個 process 長時間沒被排程，它的 priority 是否會逐漸提高
+
+  <details>
+  <summary><span style="color:orange;">regex</span></summary>
+    用 regex `pid=(\d+).*priority=(\d+)` 搜尋每一行 (正則表達式 Regex 是一 字串匹配語法，能在一段文字中快速找出想要的部分)
+    (\d+)：代表一串數字、.*：代表中間有任意字元（例如 state=SLEEPING）。
+    所以能從這樣的文字抓到：procstatelog: pid=3 state=SLEEPING priority=11 $\to$ pid = 3、priority = 11 
+  </details> 
+
+
+  對每一個 process，根據 ticks 排序對每一筆紀錄做成對比較：i = 起始點；j = 比 i 晚的某筆log，檢查是否相隔至少 20 ticks、是否 priority 變大
+  `mid_states` 收集從 ticks_i 到 ticks_j 之間這段時間 process 的所有狀態
+
+    ```py
+    @test(20, "aging-strict")
+    def test_aging():
+        r.run_qemu(shell_script(["mp2-aging 100"])) # 執行 100 個單位時間
+        out = r.qemu.output
+        parsed = parse(out)
+
+        assert parsed, "\nNo procstatelog lines found."
+
+        found_any = False
+        details = []
+
+        for pid, entries in parsed.items(): # 主要邏輯
+            entries_sorted = sorted(entries, key=lambda e: e["ticks"])
+            n = len(entries_sorted)
+            for i in range(n):
+                ti = entries_sorted[i]["ticks"]
+                pi = entries_sorted[i]["priority"]
+                for j in range(i+1, n):
+                    tj = entries_sorted[j]["ticks"]
+                    pj = entries_sorted[j]["priority"]
+                    if tj < ti + 20:
+                        continue
+                    if pj > pi:
+                        # check states between i and j the process wasn't exiting
+                        mid_states = {e["state"] for e in entries_sorted[i:j+1]}
+                        details.append((pid, ti, pi, tj, pj, mid_states))
+                        found_any = True
+                        break
+                if found_any:
+                    break
+            if found_any:
+                break
+                ...
+
+    run_tests()
+    ```
 
 ## Contributions
 
