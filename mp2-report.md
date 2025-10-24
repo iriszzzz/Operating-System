@@ -445,7 +445,7 @@ ____
       ```
   2. `kernel/proc.c/userinit()`
 
-      `userinit()` 控制放入 ready queue的時機，主要流程是會先設定完 user space 與 context 後才設為 `RUNNABLE`。其中比較重要的是會呼叫 `allocproc()` 來執行 Process 建立、並 `pushreadylist()` 把 p 放入 ready queue
+      作為控制主流程，`userinit()` 控制放入 ready queue的時機，主要流程是會先設定完 user space 與 context 後才設為 `RUNNABLE`。其中比較重要的是會呼叫 `allocproc()` 來執行 Process 建立、並 `pushreadylist()` 把 p 放入 ready queue
 
       ```c
       void
@@ -478,18 +478,17 @@ ____
       `allocproc()` 為分配與初始化 PCB 的最底層 helper，以及為後續建立 process 準備基礎結構（如 kernel stack、trapframe、context）
 
       步驟：
-        在 process table 中掃描 `UNUSED` 的 entry，找到要分配的 PCB(process control block)。初始化 PCB 基本欄位，將狀態設為 `USED` ，並分配 PID、kernel stack、trapframe、context。設定初始上下文(context)，為該 process 準備好返回 user mode 或從 fork() 的返回點繼續的上下文。最後設定其他必要欄位、回傳 PCB 指標
-        > 當建立一個新的process時，它就會創建對應的 PCB 來儲存該 process 的所有重要資訊
+        在 process table 中掃描 `UNUSED` 的 entry，找到要分配的 PCB(process control block)。初始化 PCB 基本欄位，將狀態設為 `USED` ，並分配 PID、kernel stack、trapframe、context。設定初始上下文(context)，為該 process 準備好返回 user mode 或從 `fork()` 的返回點繼續的上下文。最後設定其他必要欄位、回傳 PCB 指標
+        > 當建立一個新的 process 時，它就會創建對應的 PCB 來儲存該 process 的所有重要資訊
 
-      由於在 **初始化過程中可能會發生錯誤** ，allocproc 不直接把process放入 ready queue
-      ，而是由上層呼叫者 (如 userinit 或 fork) 在確認初始化成功後，再將 process 狀態設為 RUNNABLE 或呼叫排程相關函數（pushreadylist）
+      由於在<span style="color:orange;">初始化過程中可能會發生錯誤</span> ，allocproc 不直接把 process 放入 ready queue
+      ，而是<span style="color:orange;">由上層呼叫者 (如 userinit 或 fork) 在確認初始化成功後，再將 process 狀態設為 RUNNABLE 或呼叫排程相關函數（pushreadylist）</span>
 
         ```c
         static struct proc*
         allocproc(void)
         {
           struct proc *p;
-
           for(p = proc; p < &proc[NPROC]; p++) {
             acquire(&p->lock);
             if(p->state == UNUSED) {
@@ -509,7 +508,6 @@ ____
             release(&p->lock);
             return 0;
           }
-
           p->pagetable = proc_pagetable(p); // An empty user page table.
           if(p->pagetable == 0){
             freeproc(p);
@@ -536,35 +534,15 @@ ____
           mfqs_enqueue(p);
         }
         ```
-        在MLFQ(Multilevel Feedback Queue)中，pushreadylist 會根據程序的優先級將它插入對應等級的 queue（L1、L2、L3）
+        在 MLFQ(Multilevel Feedback Queue) 中，pushreadylist 會根據程序的優先級將它插入對應等級的 queue（L1、L2、L3），細節詳見實作的部分: [mfqs_enqueue](#mfqs_enqueue)
 
-        ```c
-        // kernel/mp2-mfqs.h.c/mfqs_enqueue()
-        // 把「已經是 RUNNABLE」的行程丟進正確隊伍
+- `kernel/proc.c/priorfork()`/`fork()` $\to$ `allocproc()` $\to$ `pushreadylist()` (子程序)
 
-        void mfqs_enqueue(struct proc *p){
-            struct proclistnode *pn;
-            pn = allocproclistnode(p);
-            if(pn == 0)
-                panic("mfqs_enqueue: no proclistnode");
-            int level = level_of(p);
-            if(level == 1){
-                pushsortedproclist(&l1q, pn);
-            }else if(level == 2){
-                pushsortedproclist(&l2q, pn);
-            }else{
-                p->rr_budget = RR_QUANTUM; // L3 新來的行程
-                pushbackproclist(&l3q, pn);
-            }
-        }
-        ```
-
-- `kernel/proc.c/priorfork()`/`fork` $\to$ `allocproc()` $\to$ `pushreadylist()` (子程序)
-  (priorfork 允許在創建子 process 時動態設置優先權，而 fork 則是固定優先權)
+  (`priorfork()`/`fork()` 兩者差別在於 priorfork 允許在創建子 process 時動態設置優先權，而 fork 則是固定優先權)
 
   1. `kernel/proc.c/priorfork()`
 
-      創建新 process 的時候賦予該 process 一個 priority 以及是否啟用狀態記錄(statelogenabled)
+      創建新 process 的時候賦予該 process 一個 priority 以及是否啟用狀態記錄 (statelogenabled)
       
       主要會 `allocproc()` 負責從分配一個空閒的 PCB，接著設定 priority 的優先級與狀態日誌開啟標誌 statelogenabled，用來決定該 process 在調度中的優先級以及是否需要追蹤他的狀態變化。接著 `uvmcopy()` 拷貝父 process 的記憶體到子 process，並將子 process 的 trapframe 設定為父 process 的，並且設定返回值 0。設置 process 為 `RUNNABLE` 並加入ready queue
 
@@ -576,39 +554,35 @@ ____
           struct proc *np;
           struct proc *p = myproc();
 
-          if((np = allocproc()) == 0){ // Allocate process.
+          if((np = allocproc()) == 0){ // 分配新 process
             return -1;
           }
 
-          np->priority = priority;
+          np->priority = priority; // 設定優先權與狀態日誌
           np->statelogenabled = statelogenabled; // 控制是否啟用狀態日誌記錄，以時動態設置優先權
 
-          if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){ // Copy user memory from parent to child.
+          if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){ // 複製記憶體
             freeproc(np);
             release(&np->lock);
             return -1;
           }
           np->sz = p->sz;
-          *(np->trapframe) = *(p->trapframe); // copy saved user registers.
-
+          *(np->trapframe) = *(p->trapframe); // 複製 trapframe
           np->trapframe->a0 = 0; // Cause fork to return 0 in the child.
-
+          // 複製檔案描述符與工作目錄
           for(i = 0; i < NOFILE; i++)
             if(p->ofile[i])
               np->ofile[i] = filedup(p->ofile[i]);
           np->cwd = idup(p->cwd);
-
-          safestrcpy(np->name, p->name, sizeof(p->name));
-
+          safestrcpy(np->name, p->name, sizeof(p->name)); // 複製 process 名稱
+          // 記錄 pid 與設定父 process
           pid = np->pid;
-
           release(&np->lock);
-
           acquire(&wait_lock);
           np->parent = p;
           release(&wait_lock);
-
-          acquire(&np->lock);
+          // 將 process 設為可執行並加入 ready queue
+          acquire(&np->lock); 
           procstatelog(np); // Initial state log
           np->state = RUNNABLE;
           procstatelog(np);
@@ -620,7 +594,7 @@ ____
         ```
   2. `proc.c/fork()`
 
-      和priorfork的差異在於固定priorty設定，其他子process的記憶體、文件描述符、檔案目錄等資源都相同被複製或引用
+      和 priorfork 的差異在於固定 priorty 設定，其他子 process 的記憶體、文件描述符、檔案目錄等資源都相同被複製或引用
 
       ```c
       int
@@ -635,21 +609,8 @@ ____
 
         np->priority = 149; // 固定優先權
         np->statelogenabled = 0; // 狀態日誌是被停用
+        // 後面和 priorfork 一樣，會記錄 pid 與設定父 process，並將 process 設為可執行並加入 ready queue
         ...
-        release(&np->lock);
-
-        acquire(&wait_lock);
-        np->parent = p;
-        release(&wait_lock);
-
-        acquire(&np->lock);
-        procstatelog(np); // Initial state log
-        np->state = RUNNABLE;
-        procstatelog(np);
-        pushreadylist(np);
-        release(&np->lock);
-
-        return pid;
       }
       ```
 
@@ -659,17 +620,18 @@ ____
 ----
 #### Running $\to$ Ready
 - `kerneltrap`, `usertrap` -> `yield` -> `pushreadylist` -> `sched` -> `kernel/switch.S:swtch`
-process 被迫放棄 CPU 的控制權，並返回 Ready state
+
+  process 被迫放棄 CPU 的控制權，並返回 Ready state
 
 1. `kernel/trap.c/kerneltrap()`, `kernel/trap.c/usertrap()`
 
-    當 process 正在執行（無論是在 user, kernel space），並且發生了中斷或異常，CPU 會跳轉到 `kerneltrap()` 或 `usertrap()`，在這些函數中，首先會檢查是否是timer interrupt（which_dev == 2）。如果是且當前 process 的狀態為 RUNNING，則會調用 `implicityield()`，代表 process 會主動釋放 CPU 的控制權，讓 schedular 有機會選擇其他來運行
+    當 process 正在執行（無論是在 user, kernel space），並且發生了中斷或異常，CPU 會跳轉到 `kerneltrap()` 或 `usertrap()`，在這些函數中，首先會檢查是否是timer interrupt（`which_dev == 2`）。如果當前 process 的狀態為 RUNNING，則會調用 `implicityield()`，代表 process 會主動釋放 CPU 的控制權，讓 schedular 有機會選擇其他來運行
 
     a. `kernel/trap.c/kerneltrap()`
 
-      processs 因 Timer Interrupt 而非自願暫停時，控制權會先進入這兩個函數之一。如果 process 正在 user space 執行，流程會導向 usertrap；如果正在核心，則導向 kerneltrap，最後會調用 clockintr
+      processs 因 <span style="color:orange;">Timer Interrupt 而非自願暫停時，控制權會先進入這兩個函數之一。如果 process 正在 user space 執行，流程會導向 usertrap；如果正在核心，則導向 kerneltrap</span>，最後會調用 clockintr
 
-      > sepc 是 RISC-V 架構中的一個特殊寄存器，它表示 “Exception Program Counter”異常程序計數器。當發生異常或中斷時，處理器會將當前正在執行的指令的地址保存到 sepc 中，以便異常處理完成後，可以繼續從該位置返回執行
+      > sepc 是 RISC-V 架構中的一個特殊寄存器，它表示 “Exception Program Counter” 異常程序計數器。當發生異常或中斷時，處理器會將當前正在執行的指令的地址保存到 sepc 中，以便異常處理完成後，可以繼續從該位置返回執行
 
       ```c
       void 
@@ -692,41 +654,40 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     b. `kernel/trap.c/usertrap()`
 
       > Interrupt Vector
-      中斷向量是一個數據結構，包含一組處理中斷或異常的處理函數的地址。在 RISC-V 中，當處理器發生中斷或異常時，它會查找與該中斷或異常類型對應的處理函數，並跳轉到該處理函數的入口處執行
+      中斷向量包含一組處理中斷或異常的處理函數的地址。在 RISC-V 中，當處理器發生中斷或異常時，它會查找與該中斷或異常類型對應的處理函數，並跳轉到該處理函數的入口處執行
 
-        ```c
-        void
-        usertrap(void)
-        {
-          int which_dev = 0;
+      ```c
+      void
+      usertrap(void)
+      {
+        int which_dev = 0;
 
-          if((r_sstatus() & SSTATUS_SPP) != 0) // 檢查是否來自 user mode
-            panic("usertrap: not from user mode");
+        if((r_sstatus() & SSTATUS_SPP) != 0) // 檢查是否來自 user mode
+          panic("usertrap: not from user mode");
 
-          w_stvec((uint64)kernelvec); // 設置中斷向量，將後續的中斷或異常交給 kerneltrap()
+        w_stvec((uint64)kernelvec); // 設置中斷向量，將後續的中斷或異常交給 kerneltrap()
 
-          struct proc *p = myproc();
-          p->trapframe->epc = r_sepc(); // save user program counter.
-          
-          if(r_scause() == 8){
-            if(killed(p)) // 如果是系統調用
-              exit(-1);
+        struct proc *p = myproc();
+        p->trapframe->epc = r_sepc(); // save user program counter.
+        
+        if(r_scause() == 8){
+          if(killed(p)) // 如果是系統調用
+            exit(-1);
 
-            p->trapframe->epc += 4; // 跳過 syscall 
-            // an interrupt will change sepc, scause, and sstatus,
-            // so enable only now that we're done with those registers.
-            intr_on();
-            syscall();
-          } 
-          ...
-          if(which_dev == 2) // give up the CPU if this is a timer interrupt.
-            implicityield();
-          usertrapret(); // 返回 user mode
-        }
-        ```
+          p->trapframe->epc += 4; // 跳過 syscall 
+          intr_on();
+          syscall();
+        } 
+        ...
+        if(which_dev == 2) // give up the CPU if this is a timer interrupt.
+          implicityield();
+        usertrapret(); // 返回 user mode
+      }
+      ```
 2. `kernel/proc.c/yield()`
     <a id="yield"></a>
-    當 time slice 用完、或搶佔條件滿足等情況發生時，[kernel/proc.c/implicityield()](#1-kernelprocc) 觸發 `yield()`，`yield()`將當前運行的 process 從 Running state 移到 Ready、當前 process 狀態設定為 RUNNABLE，然後讓 scheduler() 決定接下來運行哪個
+
+    當 time slice 用完、或搶佔條件滿足等情況發生時，[kernel/proc.c/implicityield()](#proc.c) 觸發 `yield()`，`yield()`將當前運行的 process 從 Running state 移到 Ready、當前 process 狀態設定為 RUNNABLE，然後讓 `scheduler()` 決定接下來運行哪個
 
     ```c
     void
@@ -775,11 +736,12 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     }
     ```
 
-    系統呼叫入口，user process呼叫 sleep() 時，kernel 接收到的系統呼叫處理函數。它通常負責從user space 讀取參數（像是要休眠的 tick 數），並呼叫 kernel 的 sleep()
+    系統呼叫入口，user process呼叫 `sleep()` 時，kernel 接收到的系統呼叫處理函數。它通常負責從 user space 讀取參數（像是要休眠的 tick 數），並呼叫 kernel 的 `sleep()`
 
 2. `kernel/proc.c/sleep()`
     <a id="sleep"></a>
-    進入 SLEEPING 狀態之前或之後，sleep 函數必須釋放用來保護該 process 的鎖。因為程序在睡眠時必須釋放資源，讓其他程序可以完成事件
+
+    進入 SLEEPING 狀態之前或之後，sleep 必須釋放用來保護 kernel process 的鎖。因為程序在睡眠時必須釋放資源，讓其他程序可以完成事件
 
     ```c
     void
@@ -793,8 +755,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         panic("sleep: allocchannel");
       }
       release(lk); // 釋放鎖，防止 deadlock
-      //// Running→Waiting，est_burst才更新
-      mfqs_update_est_burst(p);
+      
       p->chan = chan;
       p->state = SLEEPING; // process state = SLEEPING
       procstatelog(p);
@@ -808,7 +769,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 
 3. `kernel/sysproc.c/sched()`
 
-    `sched()` 檢查 process 狀態是否已不是 RUNNABLE，確認程序已準備好切換。並呼叫 `swtch()`執行上下文切換
+    `sched()` 讓 CPU 從執行一個 process 轉換到執行另一個 process (上下文切換)。檢查 process 狀態是否已不是 RUNNABLE，確認程序已準備好切換。並呼叫 `swtch()`執行上下文切換
 
     ```c
     void
@@ -857,10 +818,10 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     (9) clockintr() 執行：ticks++、wakeup(&ticks)、aging 等
     ```
 
-    1. `kernel/start.c/timerinit()`
+  1. `kernel/start.c/timerinit()`
 
       `timerinit()` 會設定 RISC-V 的 CLINT timer，使得 timer interrupt 發生後，CPU 會跳到 timervec（trap handler）中。
-      timervec 會將這個 machine-mode timer interrupt 轉換成 supervisor-mode software interrupt，然後由 kerneltrap() → devintr() → clockintr() 執行
+        timervec 會將這個 machine-mode timer interrupt 轉換成 supervisor-mode software interrupt，然後由 `kerneltrap()` $\to$ `devintr()` $\to$ `clockintr()` 執行
 
         ```c
         void
@@ -883,18 +844,20 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
         }
         ```
 
-    2. `kernel/kernelvec.S/timervec`
+  2. `kernel/kernelvec.S/timervec`
 
-        Machine-mode 設定了 sip.SSIP = 1，這樣 S-mode 就會產生 software interrupt。(在下一個 trap 發生時，S-mode 將會進入 stvec 所設定的入口，也就是kernelvec)
+      Machine-mode 設定了 `sip.SSIP = 1`，這樣 S-mode 就會產生 software interrupt。(在下一個 trap 發生時，S-mode 將會進入 stvec 所設定的入口，也就是kernelvec)
+
+      mtimecmp 是 RISC-V 中用來設定下一次 timer interrupt 時間的寄存器。  mtime 是系統的全局時鐘（incrementing counter）。  當 mtime >= mtimecmp 時，RISC-V 會觸發 machine-mode timer interrupt
 
         > <span style="color:orange;">為什麼這是在 machine-mode 設定的?</span>
             因為timervec 是 machine-mode 下的 interrupt handler（處理 mtime >= mtimecmp 的情況），
             machine-mode 不能直接呼叫 supervisor-mode 的 handler（因為不是 nested trap）。
             所以它是安排好下一個 supervisor-mode interrupt（SSIP），由 OS 自己來處理
 
-        > mstatus 寄存器，有 SPP（Supervisor Previous Privilege）欄位，記錄了「trap 發生前的權限模式」
-            SPP = 0 $\to$ trap 之前是 user mode（U-mode）
-            SPP = 1 $\to$ trap 之前是 supervisor mode（S-mode）
+        > mstatus 寄存器，有 SPP（Supervisor Previous Privilege）欄位，記錄了「trap 發生前的權限模式」<br>
+            - SPP = 0 $\to$ trap 之前是 user mode（U-mode）<br>
+            - SPP = 1 $\to$ trap 之前是 supervisor mode（S-mode）
 
         ```S
         timervec:
@@ -918,57 +881,57 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
             ...
             mret
         ```
-    3. `kernel/kernelvec.S/kernelvec`
+  3. `kernel/kernelvec.S/kernelvec`
 
-        當 supervisor-mode 發生 trap 時，就會跳到 stvec 所設定的 handler。執行時會先儲存所有暫存器，呼叫 `kerneltrap()` 處理 trap，最後還原暫存器並 sret 返回原本指令
+      當 supervisor-mode 發生 trap 時，就會跳到 stvec 所設定的 handler。執行時會先儲存所有暫存器，呼叫 `kerneltrap()` 處理 trap，最後還原暫存器並 sret 返回原本指令
 
-          ```S
-          kernelvec:
-              addi sp, sp, -256   # 建立 trap frame 空間
-              sd ra, 0(sp)        # 儲存暫存器
-              ...
-              call kerneltrap     # 呼叫 C 的 trap handler
-              ...
-              addi sp, sp, 256
-              sret                # 回到被中斷前的位置
-          ```
-    4. `kernel/trap.c/kerneltrap()`
-        kerneltrap() 會接著呼叫 `devintr()` 判斷 trap 類型
+        ```S
+        kernelvec:
+            addi sp, sp, -256   # 建立 trap frame 空間
+            sd ra, 0(sp)        # 儲存暫存器
+            ...
+            call kerneltrap     # 呼叫 C 的 trap handler
+            ...
+            addi sp, sp, 256
+            sret                # 回到被中斷前的位置
+        ```
+  4. `kernel/trap.c/kerneltrap()`
+      kerneltrap() 會接著呼叫 `devintr()` 判斷 trap 類型
 
-          ```c
-          void kerneltrap() {
-              ...
-              if((sstatus & SSTATUS_SPP) == 0)
-                  panic("kerneltrap: not from supervisor mode");
+        ```c
+        void kerneltrap() {
+            ...
+            if((sstatus & SSTATUS_SPP) == 0)
+                panic("kerneltrap: not from supervisor mode");
 
-              if(intr_get() != 0)
-                  panic("kerneltrap: interrupts enabled");
-              if((which_dev = devintr()) != 0){ // 處理外部中斷
-                  ...
-              }
-              ...
-          }
-          ```
-    5. `kernel/trap.c/devintr()`
+            if(intr_get() != 0)
+                panic("kerneltrap: interrupts enabled");
+            if((which_dev = devintr()) != 0){ // 處理外部中斷
+                ...
+            }
+            ...
+        }
+        ```
+  5. `kernel/trap.c/devintr()`
 
-        `scause = 0x8000000000000001` 代表 supervisor software interrupt，會呼叫 `clockintr()`，最後清掉 sip 中的 SSIP bit（避免重複中斷）
+      `scause = 0x800000000000000L` 代表 supervisor software interrupt，會呼叫 `clockintr()`，最後清掉 sip 中的 SSIP bit（避免重複中斷）
 
-          ```c
-          int devintr() {
-              ...
-              uint64 scause = r_scause();
+        ```c
+        int devintr() {
+            ...
+            uint64 scause = r_scause();
 
-              if((scause & 0x8000000000000000L) &&
-                (scause & 0xff) == 1){// supervisor software interrupt (SSIP)
-                  if(cpuid() == 0){
-                      clockintr();   // 只有 CPU 0 處理時鐘中斷
-                  }
-                  w_sip(r_sip() & ~2); // 清掉 SSIP
-                  return 2;
-              }
-              ...
-          }
-          ```
+            if((scause & 0x8000000000000000L) &&
+              (scause & 0xff) == 1){// supervisor software interrupt (SSIP)
+                if(cpuid() == 0){
+                    clockintr();   // 只有 CPU 0 處理時鐘中斷
+                }
+                w_sip(r_sip() & ~2); // 清掉 SSIP
+                return 2;
+            }
+            ...
+        }
+        ```
 
 - `kernel/trap.c/clockintr()` $\to$ `kernel/proc.c/wakeup()`
 
@@ -1124,54 +1087,56 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
 - `kernel/proc.c/scheduler` $\to$ `popreadylist()` $\to$ `kernel/swtch.S`
 
 1. `kernel/main.c/main()`
-  當`kernel/main.c/main()`呼叫 `scheduler()` 後他就會進入無限循環 (`for(;;)`)
 
-    ```c
-    void
-    main()
-    {
-      if(cpuid() == 0){
+    當`kernel/main.c/main()`呼叫 `scheduler()` 後他就會進入無限循環 (`for(;;)`)
+
+      ```c
+      void
+      main()
+      {
+        if(cpuid() == 0){
+          ...
+          userinit();      // first user process
+        } 
         ...
-        userinit();      // first user process
-      } 
-      ...
 
-      scheduler();        
-    }
-    ```
-2. `kernel/proc.c/scheduler()`
-    `scheduler()` 持續尋找一個狀態為 RUNNABLE(Ready)的process來執行，在進入排程決策前，scheduler 會確保 CPU 核心已關閉中斷 (push_off()/pop_off() 或類似機制)，以避免在切換上下文時發生競爭條件或中斷
-
-    ```c
-    void
-    scheduler(void)
-    {
-      struct proc *p; // 指向當前選中的process
-      struct cpu *c = mycpu(); // 返回當前正在運行 scheduler 函數的 CPU 的訊息
-      
-      c->proc = 0; // 當前 CPU 所屬 process 設置為 0。為保證開始時，CPU 沒有當前正在執行的進 process
-      for(;;){
-        intr_on(); // 啟用中斷：這會讓 CPU 開始接受來自外部設備的中斷信號
-
-        if((p = popreadylist()) == 0) { 
-          continue; // popreadylist()從 Ready Queue 返回一個處於 RUNNABLEprocess。如果 p = 0，則當前沒有可運行的 process
-        }
-        acquire(&p->lock); // 選中的process p 上鎖，以防止 process 狀態在調度過程中被修改
-        if(p->state != RUNNABLE) {
-          panic("scheduler: p->state != RUNNABLE");
-        }
-        p->startrunningticks = ticks; // 記錄 process 開始運行的時間
-        p->state = RUNNING;
-        c->proc = p;
-        procstatelog(p); // process 狀態記錄
-        swtch(&c->context, &p->context); // 上下文切換。swtch() 會保存當前 CPU 的上下文，並將其切換到進程 p 的上下文，開始執行進程 p
-
-        c->proc = 0; // 將當前 CPU 的 process 設為 0，表當前沒有 process 在運行。這是在上下文切換後，準備下一次調度前的清理工作
-
-        release(&p->lock);
+        scheduler();        
       }
-    }
-    ```
+      ```
+2. `kernel/proc.c/scheduler()`
+
+      `scheduler()` 持續尋找一個狀態為 RUNNABLE(Ready) 的 proces s來執行，在進入排程決策前，scheduler 會確保 CPU 核心已關閉中斷 (`push_off()`/`pop_off()` 或類似機制)，以避免在切換上下文時發生競爭條件或中斷
+
+      ```c
+      void
+      scheduler(void)
+      {
+        struct proc *p; // 指向當前選中的process
+        struct cpu *c = mycpu(); // 返回當前正在運行 scheduler 函數的 CPU 的訊息
+        
+        c->proc = 0; // 當前 CPU 所屬 process 設置為 0。為保證開始時，CPU 沒有當前正在執行的進 process
+        for(;;){
+          intr_on(); // 啟用中斷：這會讓 CPU 開始接受來自外部設備的中斷信號
+
+          if((p = popreadylist()) == 0) { 
+            continue; // popreadylist()從 Ready Queue 返回一個處於 RUNNABLEprocess。如果 p = 0，則當前沒有可運行的 process
+          }
+          acquire(&p->lock); // 選中的process p 上鎖，以防止 process 狀態在調度過程中被修改
+          if(p->state != RUNNABLE) {
+            panic("scheduler: p->state != RUNNABLE");
+          }
+          p->startrunningticks = ticks; // 記錄 process 開始運行的時間
+          p->state = RUNNING;
+          c->proc = p;
+          procstatelog(p); // process 狀態記錄
+          swtch(&c->context, &p->context); // 上下文切換。swtch() 會保存當前 CPU 的上下文，並將其切換到進程 p 的上下文，開始執行進程 p
+
+          c->proc = 0; // 將當前 CPU 的 process 設為 0，表當前沒有 process 在運行。這是在上下文切換後，準備下一次調度前的清理工作
+
+          release(&p->lock);
+        }
+      }
+      ```
 
   3. `popreadylist()`
 
@@ -1236,7 +1201,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
     ```
 
   為了實現`multi feedback queue scheduler` 實作功能，因此在 `kernel` 新增檔案 `mp2-mfqs.c/ .h`，
-  並在 `proc.c` 中的排程接口與過程加入新增的函式。 
+  並在 `proc.c` 中的排程接口與過程加入新增的函式
 
   <p align="center"><img src="flow.png" alt="Diagram of Process State" width="500"></p>
 
@@ -1260,6 +1225,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
   - `implicityield()` : Timer Interrupt Handling
     - 確認當前 process 狀態
     <a id ="proc.c"></a>
+
     ```c
     // Implicit yield is called on timer interrupt
     void
@@ -1274,7 +1240,7 @@ process 被迫放棄 CPU 的控制權，並返回 Ready state
       if (p->priority >= 100){
         p->psjf_T++;
       }
-     ```
+    ```
     - L1 (PSJF)：累加 CPU burst 時間
     - L3 (RR)：每次扣 1 time quantum，並檢查是否用完 timeslice
      ```c
