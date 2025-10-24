@@ -38,6 +38,8 @@
        > 5：STIP，定時器中斷（Timer interrupt）\
        > 9：SEIP，外部裝置中斷（External interrupt）
      - scause：為什麼 CPU 進入 trap（例如外部中斷、timer、syscall...）
+     - SPP（Supervisor Previous Privilege）：決定 sret 之後回到 U 或 S。清成 0 就是回 U。
+     - SPIE：S-Previous Interrupt Enable（sie 備份位）sret 之後把 SIE（中斷允許位）恢復為 1 → 回到 user 就能收中斷（例如時鐘）。
      - mstatus：Machine 狀態暫存器，M-mode 的版本，比 sstatus 權限更高
      - mie：Machine Interrupt Enable，M-mode 開關各種中斷
      - mip：Machine Interrupt Pending，M-mode 正在等待的中斷
@@ -107,7 +109,7 @@
  - User space interrupt handler `為什麼要分 user 與 kernel handler`
  - `usertrapret` -> `kernel/trampoline.S:uservec` -> `usertrap` -> `devintr` -> `clockintr`
 
-a. `usertrapret`
+#### a. `usertrapret`
  - 前言：怎麼到`usertrapret`？
    > `usertrap()`裡最後會呼叫`usertrapret`，而每次進入`trampoline.S`裡的`uservec`都在結尾跳入`usertrap()`\
    > 每次在usertrap裡執行完任務後，回 user mode 前都會執行一次 usertrapret()，它會設定下次中斷時該跳回 uservec。\
@@ -115,211 +117,170 @@ a. `usertrapret`
 中斷發生 → 進 uservec → usertrap → devintr → clockintr → 再回 usertrapret
 
    ```c
-   //
    // return to user space
-   //
    void
    usertrapret(void)
    {
      struct proc *p = myproc();
    
-     intr_off();
+     intr_off(); // 先把 S-mode 的外部中斷暫時關掉
    
-     // send syscalls, interrupts, and exceptions to uservec in    trampoline.S
      uint64 trampoline_uservec = TRAMPOLINE + (uservec -    trampoline);
-     w_stvec(trampoline_uservec);
-   ```
- - `TRAMPOLINE` 是一個固定高位址，`uservec - trampoline` 是在計算出組譯時 uservec 在 trampoline 裡的相對位移，加上 TRAMPOLINE（整塊放到記憶體的起點），就得到 uservec 的實際執行位址。
- - `w_stvec` 把這個位址寫入 stvec。
+     // `TRAMPOLINE` 是一個固定高位址，
+     // `uservec - trampoline` 是計算組譯時裡的相對位移，加上 TRAMPOLINE 的起點 = uservec 的實際執行位址。
+     
+     w_stvec(trampoline_uservec);  // `w_stvec` 把這個位址寫入 stvec。
 
-
-   ```c
-   
-     // set up trapframe values that uservec will need when
-     // the process next traps into the kernel.
-     p->trapframe->kernel_satp = r_satp();         // kernel    page table
-     p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's    kernel stack
-     p->trapframe->kernel_trap = (uint64)usertrap;
-     p->trapframe->kernel_hartid = r_tp();         // hartid    for cpuid()
-   
-     // set up the registers that trampoline.S's sret will use
-     // to get to user space.
+     // 將 kernel 需要用的值存回 trapframe，下次到 kernel model 就可取出使用
+     p->trapframe->kernel_satp = r_satp();         // 現在的 kernel page table
+     p->trapframe->kernel_sp = p->kstack + PGSIZE; // 這個行程的 kernel stack 頂端
+     p->trapframe->kernel_trap = (uint64)usertrap; // 之後要跳回的 C 函式入口
+     p->trapframe->kernel_hartid = r_tp();         // 目前 CPU 的 hart id
      
      // set S Previous Privilege mode to User.
      unsigned long x = r_sstatus();
-     x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
-     x |= SSTATUS_SPIE; // enable interrupts in user mode
+     x &= ~SSTATUS_SPP; // SPP（Supervisor Previous Privilege）=0 → sret 後回「使用者模式」
+     x |= SSTATUS_SPIE; // sret 之後把 SIE（中斷允許位）恢復為 1 → 回到 user 就能收中斷（例如時鐘）。
      w_sstatus(x);
    
-     // set S Exception Program Counter to the saved user pc.
-     w_sepc(p->trapframe->epc);
+     w_sepc(p->trapframe->epc); // 將 cpu 回 user 的執行位址存入 epc
    
-     // tell trampoline.S the user page table to switch to.
-     uint64 satp = MAKE_SATP(p->pagetable);
+     uint64 satp = MAKE_SATP(p->pagetable); // 將這個 user pagetable 打包存入 satp，讓待會 userret 能寫入
    
-     // jump to userret in trampoline.S at the top of memory,    which 
-     // switches to the user page table, restores user    registers,
-     // and switches to user mode with sret.
-     uint64 trampoline_userret = TRAMPOLINE + (userret -    trampoline);
-     ((void (*)(uint64))trampoline_userret)(satp);
+     uint64 trampoline_userret = TRAMPOLINE + (userret -    trampoline); // 計算 userret 的實際位址
+     ((void (*)(uint64))trampoline_userret)(satp); // userret 會接到 satp，做「切回 user page table、還原暫存器、sret」的動作。
    }
    ```
-b. `kernel/trampoline.S:uservec`
-   ```asm
-   #include "riscv.h"
-   #include "memlayout.h"
+#### b. `kernel/trampoline.S:uservec`
+  - trap.c 把 stvec 指到這裡，從 user space 進來的所有 trap，起點就是這裡（uservec）
+    發生 trap 時，CPU 權限會切到 S-mode（Supervisor），讓 user page table 可以安全轉移成 kernel page table
 
-   .section trampsec
-   .globl trampoline
-   trampoline:
-   .align 4
-   .globl uservec
-   uservec:    
-    #
-    # trap.c sets stvec to point here, so
-    # traps from user space start here,
-    # in supervisor mode, but with a
-    # user page table.
-    #
+    ```c
+    #include "riscv.h"
+    #include "memlayout.h"
+ 
+    .section trampsec
+    .globl trampoline
+    trampoline:
+    .align 4
+    .globl uservec
+    uservec:    
+ 
+     csrw sscratch, a0 // 將 user a0 放到 sscratch
+     li a0, TRAPFRAME // 將 a0 設為 trapframe addr
+     
+     // 存 user reg 到 TRAPFRAME
+     sd ra, 40(a0)
+     sd sp, 48(a0)
+     ...略
+     sd t6, 280(a0)
+ 
+     // 將 user a0 放入 trapframe->a0 裡
+     csrr t0, sscratch
+     sd t0, 112(a0)
+ 
+     ld sp, 8(a0) // 把 kernel 事先存好要用的值載入
+     ...
+     ld t1, 0(a0) // fetch the kernel page table address, 
+ 
+     sfence.vma zero, zero // 確保前面的存取都結束
+     csrw satp, t1 // 改用 kernel page table
+ 
+     sfence.vma zero, zero // 把 TLB 舊東西清一清
+ 
+     jr t0 // jump to usertrap()
+ 
+    ```
+#### c. `usertrap`
+  - usertrap
 
-    # save user a0 in sscratch so
-    # a0 can be used to get at TRAPFRAME.
-    csrw sscratch, a0
-
-    # each process has a separate p->trapframe memory area,
-    # but it's mapped to the same virtual address
-    # (TRAPFRAME) in every process's user page table.
-    li a0, TRAPFRAME
+    ```c
+    void
+    usertrap(void)
+    {
+      int which_dev = 0;
+      if((r_sstatus() & SSTATUS_SPP) != 0)
+        panic("usertrap: not from user mode"); // 確認是否從 u-mode 來
     
-    # save the user registers in TRAPFRAME
-    sd ra, 40(a0)
-    sd sp, 48(a0)
-    sd gp, 56(a0)
-    ...略
-    sd t4, 264(a0)
-    sd t5, 272(a0)
-    sd t6, 280(a0)
-
-       # save the user a0 in p->trapframe->a0
-    csrr t0, sscratch
-    sd t0, 112(a0)
-
-    ld sp, 8(a0) # initialize kernel stack pointer
-
-    ld tp, 32(a0) # make tp hold the current hartid,
-
-    ld t0, 16(a0) # load the address of usertrap()
-
-    ld t1, 0(a0) # fetch the kernel page table address, 
-
-    # wait for any previous memory operations to complete, so that
-    # they use the user page table.
-    sfence.vma zero, zero
-
-    # install the kernel page table.
-    csrw satp, t1
-
-    # flush now-stale user entries from the TLB.
-    sfence.vma zero, zero
-
-    jr t0 # jump to usertrap()
-
-   ```
-c. `usertrap`
-
-   ```c
-   void
-   usertrap(void)
-   {
-     int which_dev = 0;
-   
-     if((r_sstatus() & SSTATUS_SPP) != 0)
-       panic("usertrap: not from user mode");
-   
-     w_stvec((uint64)kernelvec);
-   
-     struct proc *p = myproc();
-     
-     p->trapframe->epc = r_sepc();
-     
-     if(r_scause() == 8){// system call
-   
-       if(killed(p))
-         exit(-1);
-   
-       p->trapframe->epc += 4;
-   
-       // an interrupt will change sepc, scause, and sstatus,
-       // so enable only now that we're done with those    registers.
-       intr_on();
-   
-       syscall();
-     } else if((which_dev = devintr()) != 0){
-       // ok
-     } else {
-       printf("usertrap(): unexpected scause %p pid=%d\n",    r_scause(), p->pid);
-       printf("            sepc=%p stval=%p\n", r_sepc(),    r_stval());
-       setkilled(p);
-     }
-   
-     if(killed(p))
-       exit(-1);
-   
-     // give up the CPU if this is a timer interrupt.
-     if(which_dev == 2)
-       implicityield();
-   
-     usertrapret();
-   }
-   ```
-d. `devintr`
-   ```c
-   // check if it's an external interrupt or software interrupt,
-   int
-   devintr()
-   {
-     uint64 scause = r_scause();
-   
-     if((scause & 0x8000000000000000L) &&
-        (scause & 0xff) == 9){
-       // this is a supervisor external interrupt, via PLIC.
-   
-       // irq indicates which device interrupted.
-       int irq = plic_claim();
-   
-       if(irq == UART0_IRQ){
-         uartintr();
-       } else if(irq == VIRTIO0_IRQ){
-         virtio_disk_intr();
-       } else if(irq){
-         printf("unexpected interrupt irq=%d\n", irq);
-       }
-   
-       // the PLIC allows each device to raise at most one
-       // interrupt at a time; tell the PLIC the device is
-       // now allowed to interrupt again.
-       if(irq)
-         plic_complete(irq);
-   
-       return 1;
-     } else if(scause == 0x8000000000000001L){
-       // software interrupt from a machine-mode timer    interrupt,
-       // forwarded by timervec in kernelvec.S.
-   
-       if(cpuid() == 0){
-         clockintr();
-       }
-       
-       // acknowledge the software interrupt by clearing
-       // the SSIP bit in sip.
-       w_sip(r_sip() & ~2); //r_sip() 讀出目前 sip 的值，& ~2 把第 1 bit（SSIP）清成 0 ，w_sip(...) 寫回 sip → 表示我們已經處理完中斷
-   
-       return 2;
-     } else {
-       return 0;
-     }
-   }
-   ```
+      w_stvec((uint64)kernelvec); // 把 stvec 換成 kernelvec，之後如果在 kernel 內又發生 trap，就會走 kernelvec（不是走 trampoline 的 uservec）。
+    
+      struct proc *p = myproc();
+      p->trapframe->epc = r_sepc(); // 把當下 user PC 存回 trapframe->epc
+      
+      if(r_scause() == 8){ // system call   
+        if(killed(p))
+          exit(-1);   
+        p->trapframe->epc += 4; // PC+4 return 跳過 ecall
+    
+        intr_on();// interrupt 會改變 sepc, scause, and sstatus
+                 // 所以關閉直到我們用完 (intro_off 在 usertrapret)
+ 
+        syscall();
+      } else if((which_dev = devintr()) != 0){
+        // ok
+      } else {
+        printf("usertrap(): unexpected scause %p pid=%d\n",    r_scause(), p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(),    r_stval());
+        setkilled(p);
+      }
+      if(killed(p))
+        exit(-1);
+    
+      if(which_dev == 2) // 若是 timer 則放棄 cpu 並進入 implicityield();
+        implicityield();
+    
+      usertrapret(); 
+    }
+    ```
+#### d. `devintr`
+  - devintr
+    ```c
+    // check if it's an external interrupt or software interrupt,
+    int
+    devintr()
+    {
+      uint64 scause = r_scause();
+    
+      if((scause & 0x8000000000000000L) &&
+         (scause & 0xff) == 9){
+        // this is a supervisor external interrupt, via PLIC.
+    
+        // irq indicates which device interrupted.
+        int irq = plic_claim();
+    
+        if(irq == UART0_IRQ){
+          uartintr();
+        } else if(irq == VIRTIO0_IRQ){
+          virtio_disk_intr();
+        } else if(irq){
+          printf("unexpected interrupt irq=%d\n", irq);
+        }
+    
+        // the PLIC allows each device to raise at most one
+        // interrupt at a time; tell the PLIC the device is
+        // now allowed to interrupt again.
+        if(irq)
+          plic_complete(irq);
+    
+        return 1;
+      } else if(scause == 0x8000000000000001L){
+        // software interrupt from a machine-mode timer    interrupt,
+        // forwarded by timervec in kernelvec.S.
+    
+        if(cpuid() == 0){
+          clockintr();
+        }
+        
+        // acknowledge the software interrupt by clearing
+        // the SSIP bit in sip.
+        w_sip(r_sip() & ~2); //r_sip() 讀出目前 sip 的值，& ~2 把第 1 bit（SSIP）清成 0 ，w_sip(...) 寫回 sip → 表示我們已經處理完中斷
+    
+        return 2;
+      } else {
+        return 0;
+      }
+    }
+    ```
   - devintr() 回傳值代表中斷類型：0（not recognized） / 2（timer interrupt） / 1（other device,）
   - `PLIC`：Platform-Level Interrupt Controller，負責「管理外部中斷」的硬體控制器。\
   - CPU 可能會同時接收到很多外部裝置的中斷（像 UART、磁碟、網路卡），
@@ -359,52 +320,40 @@ xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並
 #### 3. `kernel/kernelvec.S:kernelvec`
  - Kernel space interrupt handler
   > `usertrap` -> `kernel/kernelvec.S:kernelvec` -> `kerneltrap` -> `devintr` -> `clockintr`
-   ```asm
+#### a. [`usertrap`](#a-usertrap)
+#### b. `kernelvec.S:kernelvec`
+ - S 模式內（已在 kernel 中）發生中斷/例外時的入口。
+   ```c
    .globl kerneltrap
    .globl kernelvec
    .align 4
    kernelvec:
-    # make room to save registers.
-    addi sp, sp, -256
 
-    # save the registers.
-    sd ra, 0(sp)
-    sd sp, 8(sp)
-    sd gp, 16(sp)
-    sd tp, 24(sp)
-    sd t0, 32(sp)
-    ...略
-    sd t4, 224(sp)
-    sd t5, 232(sp)
+    addi sp, sp, -256 // 在當前的 kernel stack 上騰位子
+    sd ra, 0(sp) // 將 256byte 所有暫存器放到stack
+    ...
     sd t6, 240(sp)
 
-    # call the C trap handler in trap.c
-    call kerneltrap
+    call kerneltrap // 呼叫 c 處理函式 kerneltrap()
 
-    # restore registers.
-    ld ra, 0(sp)
+    ld ra, 0(sp) // 復原 reg
     ld sp, 8(sp)
-    ld gp, 16(sp)
-    # not tp (contains hartid), in case we moved CPUs
-    ld t0, 32(sp)
-    ld t1, 40(sp)
-    ld t2, 48(sp)
-    ld s0, 56(sp)
-    ...略
-    ld t4, 224(sp)
-    ld t5, 232(sp)
+    ...
+    # not tp (contains hartid), in case we moved CPUs 
+    // tp 在 xv6（RISC-V）被用來放「目前這個 hart 的 ID」，是「CPU-local」的關鍵暫存器
+    // 一般來說同一段 trap 不會跨 hart ，但避免有遷移或re entry，別把先前存下的 tp（可能是舊 hart 的值）硬塞回來。
+    ...
     ld t6, 240(sp)
 
-    addi sp, sp, 256
+    addi sp, sp, 256 // 清空 stack
 
-    # return to whatever we were doing in the kernel.
-    sret
+    sret //回到kernel剛剛在做的指令 因為這是 S-mode 的陷阱入口，所以用 sret（不是 mret）。
 
     #
     # machine-mode timer interrupt.
     #
    ```
-
+#### c. `kerneltrap`
    ```c
    // interrupts and exceptions from kernel code go here via kernelvec,
    // on whatever the current kernel stack is.
@@ -412,82 +361,37 @@ xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並
    kerneltrap()
    {
      int which_dev = 0;
-     uint64 sepc = r_sepc();
+     uint64 sepc = r_sepc();        //讀取與保存關鍵 CSR，之後要寫回
      uint64 sstatus = r_sstatus();
      uint64 scause = r_scause();
      
-     if((sstatus & SSTATUS_SPP) == 0)
+     if((sstatus & SSTATUS_SPP) == 0)  // 確認真的是從 S-mode 進來，且進來時 SIE 應該是關的
        panic("kerneltrap: not from supervisor mode");
      if(intr_get() != 0)
        panic("kerneltrap: interrupts enabled");
    
-     if((which_dev = devintr()) == 0){
+     // 交給 devintr() 判斷是哪種中斷
+     if((which_dev = devintr()) == 0){  // 異常 -> panic
        printf("scause %p\n", scause);
        printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
        panic("kerneltrap");
      }
    
-     // give up the CPU if this is a timer interrupt.
-     if(which_dev == 2 && myproc() != 0 && myproc()->state ==    RUNNING)
+     // 2 == timer interrupt（machine timer 透過 software interrupt 轉給 S-mode）
+     if(which_dev == 2 && myproc() != 0 && myproc()->state ==    RUNNING) 
+     // timer 中斷、手上有行程、且該行程在跑（RUNNING）時才 yield()
+     // preempt點!!
        implicityield();
    
-     // the yield() may have caused some traps to occur,
-     // so restore trap registers for use by kernelvec.S's sepc    instruction.
+     // yield()可能發生其他 trap，寫回原值，確保sret到對的地方
      w_sepc(sepc);
      w_sstatus(sstatus);
    }
    ```
-  - [devintr](#ix-devintr)
-   ```c
-   extern int devintr();
+#### d. [`devintr()`](#d-devintr)
 
-   int
-   devintr()
-   {
-     uint64 scause = r_scause();
-   
-     if((scause & 0x8000000000000000L) &&
-        (scause & 0xff) == 9){
+#### e. [`clockintr()`](#e-clockintr)
 
-       int irq = plic_claim();
-   
-       if(irq == UART0_IRQ){
-         uartintr();
-       } else if(irq == VIRTIO0_IRQ){
-         virtio_disk_intr();
-       } else if(irq){
-         printf("unexpected interrupt irq=%d\n", irq);
-       }
-   
-       if(irq)
-         plic_complete(irq);
-   
-       return 1;
-     } else if(scause == 0x8000000000000001L){
-   
-       if(cpuid() == 0){
-         clockintr();
-       }
-       
-       w_sip(r_sip() & ~2);
-   
-       return 2;
-     } else {
-       return 0;
-     }
-    }
-   ```
-  - [clockintr()](#iv-clockintr)
-   ```c
-   void
-   clockintr()
-   {
-     acquire(&tickslock);
-     ticks++;
-     wakeup(&ticks);
-     release(&tickslock);
-   }
-   ```
 
 ### Mapping xv6 Process States
  -  mapping relationship of kernel/proc.h enum procstate to the process states ("New", "Ready", "Running", "Waiting", "Terminated").
