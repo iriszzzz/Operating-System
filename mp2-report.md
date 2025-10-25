@@ -236,7 +236,7 @@
 #### d. `devintr`
   - devintr
     ```c
-    // check if it's an external interrupt or software interrupt,
+    // 檢查 external or software interrupt,
     int
     devintr()
     {
@@ -244,9 +244,10 @@
     
       if((scause & 0x8000000000000000L) &&
          (scause & 0xff) == 9){
-        // this is a supervisor external interrupt, via PLIC.
+        // S - mode external interrupt, scause 為什麼 CPU 進入 trap
     
-        // irq indicates which device interrupted.
+        // irq：每個外部裝置（像 UART、磁碟、網卡）會分配一個中斷編號（irq number）
+        // PLIC：Platform-Level Interrupt Controller，負責「管理外部中斷」的硬體控制器。
         int irq = plic_claim();
     
         if(irq == UART0_IRQ){
@@ -257,24 +258,17 @@
           printf("unexpected interrupt irq=%d\n", irq);
         }
     
-        // the PLIC allows each device to raise at most one
-        // interrupt at a time; tell the PLIC the device is
-        // now allowed to interrupt again.
         if(irq)
-          plic_complete(irq);
+          plic_complete(irq); // 告訴 PLIC 已處理完 IRQ = irq 的中斷
     
         return 1;
       } else if(scause == 0x8000000000000001L){
-        // software interrupt from a machine-mode timer    interrupt,
-        // forwarded by timervec in kernelvec.S.
-    
+        // software interrupt from a machine-mode timer 
         if(cpuid() == 0){
-          clockintr();
+          clockintr(); // timer 工作
         }
         
-        // acknowledge the software interrupt by clearing
-        // the SSIP bit in sip.
-        w_sip(r_sip() & ~2); //r_sip() 讀出目前 sip 的值，& ~2 把第 1 bit（SSIP）清成 0 ，w_sip(...) 寫回 sip → 表示我們已經處理完中斷
+        w_sip(r_sip() & ~2); //清 S 模式的 SSIP，告訴硬體已處理完這次 SW 中斷
     
         return 2;
       } else {
@@ -283,12 +277,8 @@
     }
     ```
   - devintr() 回傳值代表中斷類型：0（not recognized） / 2（timer interrupt） / 1（other device,）
-  - `PLIC`：Platform-Level Interrupt Controller，負責「管理外部中斷」的硬體控制器。\
-  - CPU 可能會同時接收到很多外部裝置的中斷（像 UART、磁碟、網路卡），
-但 CPU 自己沒辦法知道是哪個外設發的。
-這時就由 PLIC 來幫忙「統一收集、排隊、分發」這些中斷訊號。
-  - `irq`：Interrupt Request，每個外部裝置（像 UART、磁碟、網卡）
-都會被分配一個 中斷編號（irq number）。當裝置要通知 CPU「我有事要你處理」時，透過這個編號向 PLIC 發出中斷請求。
+  - `PLIC`：Platform-Level Interrupt Controller，CPU 可能會同時接收到很多外部裝置的中斷，沒辦法分辨來源，由 PLIC 來幫忙「統一收集、排隊、分發」這些中斷訊號。
+  - `irq`：Interrupt Request，每個外部裝置分配一個中斷編號（irq number）。當裝置要通知 CPU「我有事要你處理」時，透過這個編號向 PLIC 發出中斷請求。
 #### e. `clockintr`
    - `clockintr()`：更新時間與喚醒睡眠程式
     
