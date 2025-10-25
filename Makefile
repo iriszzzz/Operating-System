@@ -141,6 +141,7 @@ UPROGS=\
 	$U/_mp2-preempt-a\
 	$U/_mp2-preempt-b\
 	$U/_mp2-preempt-c\
+	$U/_mp2-psjf-top\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

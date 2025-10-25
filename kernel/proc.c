@@ -688,7 +688,13 @@ implicityield(void)
     return;
   }
   if (p->priority >= 100 && p->priority < 150) {
+//    if (ticks%4 == 0) {
+    //      printf("p->est_burst: %d\n", p->est_burst);
+    //      printf("mfqs_l1_top->est_burst: %d\n", mfqs_l1_top_estburst());
+    //      printf("p->psjf_T: %d\n", p->psjf_T);
+    //    }
     if (mfqs_l1_top_preempt(p)) {
+      //printf("L1 preempting process %d\n", p->pid);
       yield();
     }
   }

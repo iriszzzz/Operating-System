@@ -106,6 +106,9 @@ int mfqs_l1_nonempty(void) {
 }
 int mfqs_l1_top_preempt(struct proc *p) {
     int r = cmptopsortedproclist(&l1q, p);
+//    printf("mfqs_l1_top_preempt: cmp result=%d\n", r);
+//    printf("mfqs_l1_top_preempt: p->pid=%d, p->est_burst=%d, p->psjf_T=%d\n", p->pid, p->est_burst, p->psjf_T);
+//    printf("mfqs_l1_top_preempt: top pid=%d, est_burst=%d, psjf_T=%d\n", l1q.head->next->p->pid, l1q.head->next->p->est_burst, l1q.head->next->p->psjf_T);
     return (r < 0); //top更優先
 }
 
