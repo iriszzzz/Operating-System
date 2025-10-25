@@ -14,9 +14,10 @@
   - [3. Mfqs.c : queue-management](#3-mp2-mfqsc-queue-management)
   - [4. Mfqs.c : queue-time-records](#4-mp2-mfqsc-queue-time-records)
   - [5. Aging](#5-mp2-mfqsc-aging-implementation)
-- [Test report]()
-  - [1. ]()
-  - [2. ]()
+- [Test report](#test-report)
+  - [1. Public Test](#1-grade-mp2-public-測試)
+  - [2. Bonus - Aging](#2-grade-mp2-bonus-測試)
+  - [3. Bonus - PSJF](#3-grade-mp2-bonus2-測試)
 - [Contributions](#contributions)
 
 ## Trace Code
@@ -1557,7 +1558,7 @@ ____
 
 ## Test report
 
-### 1. ./grade-mp2-public 測試
+### 1. ./grade-mp2-public 測試 <a id="public"></a>
 <p align="center"><img src="grade-mp2-public.png" alt="Diagram of Process State" width="400"></p>
 
 - test_benchmark: 跑一基本負載 mp2-benchmark，取得 workload 參數，讓後面 test 知道該用哪個 workload
@@ -1570,7 +1571,7 @@ ____
    - b : L2 preempt L3 (priority 10,60)
    - c : L1 preempt L3 (priority 10,110)
 
-### 2. ./grade-mp2-bonus 測試
+### 2. ./grade-mp2-bonus 測試 <a id="bonus1"></a>
 <p align="center"><img src="grade-mp2-bonus.png" alt="Diagram of Process State" width="600"></p>
 
 - aging: 一個 process 長時間沒被排程，它的 priority 是否會逐漸提高
@@ -1624,7 +1625,7 @@ ____
     run_tests()
     ```
 
-### 2. ./grade-mp2-bonus2 測試
+### 3. ./grade-mp2-bonus2 測試 <a id="bonus2"></a>
  - `mp2-psjf 測試`：在 `xv6` 執行指令 `mp2-psjf (workload=50/100)`  觀察到 preempt 發生的點都是在 `running -> waiting` 後才選 shortest job 做 running，無法觀察到是否真的會在 `timer interupt` 的時候檢查 L1 queue 有無更短的程式要 preempt 進來，而不是等到 waiting 才取得下一個短行程。
 
 - `user/mp2-psjf-top.c`：嘗試不同行程確認 shortest job preempt 有實作成功，但最後寫報告檢查時才發現助教在 psjf 的測驗中就有概括到，是在 xv6 手動執行時 workload 設置不夠大，因此沒有 trace 到搶佔發生時 p state 從 `running -> ready` 而不只是 running -> waiting。
