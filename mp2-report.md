@@ -9,17 +9,18 @@
   - [2. Mapping xv6 Process States](#mapping-xv6-process-states)
   - [3. Process State Transitions and Queue Interactions](#process-state-transitions-and-queue-interactions)
 - [Implementation](#implementation)
-  - [1. Proc.c/Proc.h](#1-procc--proch)
-  - [2. Mfqs.h : funct-prototypes](#2-mp2-mfqsh-function-prototypes)
-  - [3. Mfqs.c : queue-management](#3-mp2-mfqsc-queue-management)
-  - [4. Mfqs.c : queue-time-records](#4-mp2-mfqsc-queue-time-records)
+  - [1. `proc.c`/ `proc.h`](#1-procc--proch)
+  - [2. `mfqs.h` : function prototypes](#2-mp2-mfqsh-function-prototypes)
+  - [3. `mfqs.c` : queue management](#3-mp2-mfqsc-queue-management)
+  - [4. `mfqs.c` : queue time records](#4-mp2-mfqsc-queue-time-records)
   - [5. Aging](#5-mp2-mfqsc-aging-implementation)
 - [Test report](#test-report)
   - [1. Public Test](#1-grade-mp2-public-測試)
-  - [2. Bonus - Aging](#2-grade-mp2-bonus-測試)
-  - [3. Bonus - PSJF](#3-grade-mp2-bonus2-測試)
+  - [2. Bonus : Aging](#2-grade-mp2-bonus-測試)
+  - [3. Bonus : PSJF](#3-grade-mp2-bonus2-測試)
 - [Contributions](#contributions)
 
+＊註：可點擊藍色文字前往查看詳細資訊
 ## Trace Code
 ### Timer Interrupt Handling and Context Switching
 - CSR （控制暫存器）: 用於管理系統權限、虛擬記憶體和 Trap
@@ -30,12 +31,12 @@
         >  - U-mode (User Mode) : 最低權限，使用者撰寫的測試程式或 shell 執行在此模式。U-mode 只能存取受限的記憶體和資源
       - sepc : 儲存 trap 前的 PC，回到 user mode 時要從這裡繼續（usertrapret 寫回）
      - stvec : Trap 入口點位址，指定中斷發生時跳去哪（設成 uservec 或 kernelvec）
-     - sscratch：暫存暫存器（S-mode），存放 user stack pointer（在 trampoline.S 用）。
+     - sscratch：暫存暫存器（S-mode），存放 user stack pointer（在 trampoline.S 用）
      - satp：Page table 根指標，控制虛擬記憶體（切換 user/kernel page table）
      - sie：Interrupt Enable，哪些中斷允許（timer、software、external）
      - sip：Interrupt Pending，哪些中斷正在等待處理（bit1=SSIP），每一個 bit 代表不同類型的中斷是否「掛起」（正在等待被處理）：
        > 0：USIP，使用者模式軟體中斷\
-       > 1：SSIP，主管（Supervisor）模式軟體中斷，sip裡的一個位元（bit 1）。\
+       > 1：SSIP，主管（Supervisor）模式軟體中斷，sip裡的一個位元（bit 1）\
        > 5：STIP，定時器中斷（Timer interrupt）\
        > 9：SEIP，外部裝置中斷（External interrupt）
      - scause：為什麼 CPU 進入 trap（例如外部中斷、timer、syscall...）
@@ -62,7 +63,7 @@
    .align 4
    timervec:
    ```
-  - 宣告全域標籤 timervec，4 位元組對齊。這是硬體在 machine mode timer interrupt 時跳入的入口。
+  - 宣告全域標籤 timervec，4 位元組對齊。這是硬體在 machine mode timer interrupt 時跳入的入口
     ```asm
     # start.c has set up the memory that mscratch points to:
     # scratch[0,8,16] : register save area.
@@ -77,7 +78,7 @@
     sd a3, 16(a0)
     ```
 
-   - `csrrw` : `CSR Read and Write` 從 CSR（控制暫存器）讀一個值、同時把新值寫回去。
+   - `csrrw` : `CSR Read and Write` 從 CSR（控制暫存器）讀一個值、同時把新值寫回去
      > 取得 mscratch 裡儲存的 scratch 區基址（給 a0 用）
 同時暫存目前的 a0 值（放回 mscratch），以免 a0 被破壞
   
@@ -93,9 +94,9 @@
  
      # arrange for a supervisor software interrupt
      # after this handler returns.
-     li a1, 2 # 把常數 2 載入 a1，表示要設定 bit 1 = 1（二進位）。
+     li a1, 2 # 把常數 2 載入 a1，表示要設定 bit 1 = 1（二進位）
      csrw sip, a1 # Write to CSR，寫進指定的控制暫存器（這裡是 sip）
-     #「我這邊（machine mode）已經處理完下一次時間設定，請作業系統（S-mode）等會處理 supervisor interrupt。」
+     #「我這邊（machine mode）已經處理完下一次時間設定，請作業系統（S-mode）等會處理 supervisor interrupt」
  
      ld a3, 16(a0)
      ld a2, 8(a0)
@@ -127,10 +128,10 @@
      intr_off(); // 先把 S-mode 的外部中斷暫時關掉
    
      uint64 trampoline_uservec = TRAMPOLINE + (uservec -    trampoline);
-     // `TRAMPOLINE` 是一個固定高位址，
-     // `uservec - trampoline` 是計算組譯時裡的相對位移，加上 TRAMPOLINE 的起點 = uservec 的實際執行位址。
+     // `TRAMPOLINE` 是一個固定高位址
+     // `uservec - trampoline` 是計算組譯時裡的相對位移，加上 TRAMPOLINE 的起點 = uservec 的實際執行位址
      
-     w_stvec(trampoline_uservec);  // `w_stvec` 把這個位址寫入 stvec。
+     w_stvec(trampoline_uservec);  // `w_stvec` 把這個位址寫入 stvec
 
      // 將 kernel 需要用的值存回 trapframe，下次到 kernel model 就可取出使用
      p->trapframe->kernel_satp = r_satp();         // 現在的 kernel page table
@@ -153,7 +154,7 @@
    }
    ```
 #### b. `kernel/trampoline.S:uservec`
-  - trap.c 把 stvec 指到這裡，從 user space 進來的所有 trap，起點就是這裡（uservec）
+  - `trap.c` 把 stvec 指到這裡，從 user space 進來的所有 trap，起點就是這裡（uservec）
     發生 trap 時，CPU 權限會切到 S-mode（Supervisor），讓 user page table 可以安全轉移成 kernel page table
 
     ```c
@@ -276,7 +277,7 @@
       }
     }
     ```
-  - devintr() 回傳值代表中斷類型：0（not recognized） / 2（timer interrupt） / 1（other device,）
+  - `devintr()` 回傳值代表中斷類型：0（not recognized） / 2（timer interrupt） / 1（other device,）
   - `PLIC`：Platform-Level Interrupt Controller，CPU 可能會同時接收到很多外部裝置的中斷，沒辦法分辨來源，由 PLIC 來幫忙「統一收集、排隊、分發」這些中斷訊號。
   - `irq`：Interrupt Request，每個外部裝置分配一個中斷編號（irq number）。當裝置要通知 CPU「我有事要你處理」時，透過這個編號向 PLIC 發出中斷請求。
 #### e. `clockintr`
@@ -293,27 +294,27 @@
      }
      ```
 
-     > ticks 是全域變數（系統時鐘計數）。\
+     > ticks 是全域變數（系統時鐘計數）\
 每次 timer 中斷 → ticks++。\
 有些程式在睡眠時會呼叫 sleep(&ticks, ...)，\
-→ 當 wakeup(&ticks) 執行時，那些睡在 &ticks 上的程式會被喚醒。
-   - `CLINT`： 在xv6裡，，硬體本身有「timer」裝置，它會定期觸發中斷。
+→ 當 wakeup(&ticks) 執行時，那些睡在 &ticks 上的程式會被喚醒
+   - `CLINT`： 在xv6裡，硬體本身有「timer」裝置，它會定期觸發中斷
      - `mtime`：系統當前時間（不斷遞增的計數器）
      - `mtimecmp`：下一次要產生中斷的時間點
-     > 只要 mtime >= mtimecmp，硬體就會發出一個 machine timer interrupt。\
-     > 這個中斷首先會被 timervec（在 kernel/kernelvec.S 裡）接到。
+     > 只要 mtime >= mtimecmp，硬體就會發出一個 machine timer interrupt\
+     > 這個中斷首先會被 timervec（在 kernel/kernelvec.S 裡）接到
 timervec 做兩件事：
-把 mtimecmp 加上固定的「間隔」值（例如 10,000 個 cycle），排定下一次中斷。
-設定 sip 的 bit 2（Supervisor Interrupt Pending），讓 kernel 知道要處理時鐘中斷。
+把 mtimecmp 加上固定的「間隔」值（例如 10,000 個 cycle），排定下一次中斷
+設定 sip 的 bit 2（Supervisor Interrupt Pending），讓 kernel 知道要處理時鐘中斷
    - 系統的時鐘（CLINT）是硬體自動在「固定時間間隔」發出中斷的，
-xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並喚醒被 sleep 的 process。
+xv6 的 kernel 只需在 timervec 接收後處理這些中斷，更新 ticks 並喚醒被 sleep 的 process
 
 #### 3. `kernel/kernelvec.S:kernelvec`
  - Kernel space interrupt handler
   > `usertrap` -> `kernel/kernelvec.S:kernelvec` -> `kerneltrap` -> `devintr` -> `clockintr`
 #### a. [`usertrap`](#a-usertrap)
 #### b. `kernelvec.S:kernelvec`
- - S 模式內（已在 kernel 中）發生中斷/例外時的入口。
+ - S 模式內（已在 kernel 中）發生中斷/例外時的入口
    ```c
    .globl kerneltrap
    .globl kernelvec
