@@ -1180,30 +1180,10 @@ ____
 ## Implementation
 
  - 流程圖：
-    ```
-    Timer Interrupt
-        ↓
-    devintr → clockintr → (which_dev == 2) → implicityield()
-        ↓
-    [L1] PSJF 累加 T
-        ↓
-    [L3] 扣time quatum, 檢查time slice用完？
-        YES → yield() → 返回
-        NO ↓
-    [檢查preempt] 該被更高優先級搶佔？
-        - L2/L3 跑但 L1 有人？
-        - L3 跑但 L2 有人？  
-        - L1 跑但有更短的 L1？
-        YES → yield()
-        NO → 繼續執行
-    [檢查aging] 有無等太久的程式要提高優先權
-
-    ```
+  <p align="center"><img src="flowchart.png" alt="Diagram of Process State" width="700"></p>
 
   為了實現`multi feedback queue scheduler` 實作功能，因此在 `kernel` 新增檔案 `mp2-mfqs.c/ .h`，
   並在 `proc.c` 中的排程接口與過程加入新增的函式
-
-  <p align="center"><img src="flow.png" alt="Diagram of Process State" width="500"></p>
 
 ### 1. `proc.c / proc.h`: 
  1. `proc.h`：Process Initialization
