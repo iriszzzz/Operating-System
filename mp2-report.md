@@ -1240,10 +1240,6 @@ ____
       if (p->priority >= 100){
         p->psjf_T++;
       }
-    ```
-    - L1 (PSJF)：累加 CPU burst 時間
-    - L3 (RR)：每次扣 1 time quantum，並檢查是否用完 timeslice
-     ```c
       //// L3 - RR
       mfqs_rr_on_tick(p);
       if (mfqs_rr_timeslice_up(p)) {
@@ -1264,13 +1260,13 @@ ____
           yield();
         }
       }
-    ```
-    - Preemption 檢查：確認當前執行的 p 外，是否有更高優先 level queue 的行程要插隊。如果 p 已經是在 L1 則檢查是否有更新後更短的執行工作要插隊。 
-    ```c
 
       aging(); // Add, Aging check
     }
     ```
+     - L1 (PSJF)：累加 CPU burst 時間
+     - L3 (RR)：每次扣 1 time quantum，並檢查是否用完 timeslice
+     - Preemption 檢查：確認當前執行的 p 外，是否有更高優先 level queue 的行程要插隊。如果 p 已經是在 L1 則檢查是否有更新後更短的執行工作要插隊。 
      - [Aging 檢查](#6-mp2-mfqsc-aging-implementation) 
   - `proclistinit()`：加入 [mfqs_init()](#mfqs_init) 指令，初始化 mfqs 的三種佇列<a id="initial"></a>
   - `pushreadylist()`、`popreadylist()`：在`yield()`裡被呼叫的函示<a id="pushpop"></a>，確保修改使用 [mfqs](#mfqs_enqueue) 進出佇列規則
@@ -1586,10 +1582,13 @@ ____
 
 - test_benchmark: 跑一基本負載 mp2-benchmark，取得 workload 參數，讓後面 test 知道該用哪個 workload
 - test_psjf: 測試 Preemptive Shortest Job First (PSJF)，檢查 PSJF preemption，最短剩餘時間的 process 優先執行，若有可以會 preempt 較長的
-- test_priority: 驗證 priority scheduling 是否依 priority 大小決定執行順序
+- test_priority: 驗證在 L2 queue 的範疇 scheduling 是否依 priority 大小決定執行順序
 - test_rr: 驗證 RR quantum 是否正確實作
 - test_aging: 驗證 aging 機制是否能讓低優先序的 7 最終被提升並完成工作，同時高優先序的行程不被干擾
 - test_preempt_a/b/c: 驗證 schedular 能在不同情況下正確執行 preempt 與切換
+   - a : L2 裡 priority preempt(80,100)
+   - b : L2 preempt L3 (priority 10,60)
+   - c : L1 preempt L3 (priority 10,110)
 
 ### 2. ./grade-mp2-bonus 測試
 <p align="center"><img src="grade-mp2-bonus.png" alt="Diagram of Process State" width="600"></p>
@@ -1645,6 +1644,94 @@ ____
     run_tests()
     ```
 
+### 2. ./grade-mp2-bonus2 測試
+ - `mp2-psjf 測試`：在 `xv6` 執行指令 `mp2-psjf (workload=50/100)`  觀察到 preempt 發生的點都是在 `running -> waiting` 後才選 shortest job 做 running，無法觀察到是否真的會在 `timer interupt` 的時候檢查 L1 queue 有無更短的程式要 preempt 進來，而不是等到 waiting 才取得下一個短行程。
+
+- `user/mp2-psjf-top.c`：嘗試不同行程確認 shortest job preempt 有實作成功，但最後寫報告檢查時才發現助教在 psjf 的測驗中就有概括到，是在 xv6 手動執行時 workload 設置不夠大，因此沒有 trace 到搶佔發生時 p state 從 `running -> ready` 而不只是 running -> waiting。
+
+
+
+<p align="center"><img src="bonus2_result.png" alt="Diagram of Process State" width="350"></p>
+<p align="center"><img src="top_result.png" alt="Diagram of Process State" width="500"></p>
+
+
+ ```c
+// user/mp2-psjf-top.c
+...
+  int a = priorfork(120, 1); // A：L1、長
+  if (a < 0) { fprintf(2, "priorfork A failed\n"); exit(1); }
+    if (a == 0) {
+        simulate_work(workload * 10); 
+        sleep(1);   // 若只有單一長時間burst，儘管 ready queue 裡有更短的行程也因為沒有機會進入 running -> waiting 更新該行程 est_time 而無法比較。
+        simulate_work(workload * 20);
+        sleep(1);
+        simulate_work(workload * 5);
+        exit(0);
+    }
+
+
+  int b = priorfork(120, 1);   // B：同在 L1，短
+  if (b < 0) { fprintf(2, "priorfork B failed\n"); exit(1); }
+  if (b == 0) {
+    simulate_work(workload * 5);
+    sleep(1);
+    simulate_work(workload * 5);
+    exit(0);
+  }
+ ...
+}
+
+ ```
+
+ ```python
+@test(10, "l1-preempt-no-waiting", parent=test_benchmark)
+def test_l1_preempt_no_waiting():
+    outputs = run_and_save("l1-preempt-no-waiting", f"mp2-psjf-top {workload}")
+    parsed = parse(outputs)
+    A, B = pick_two_children(parsed)
+
+    last_state = {}       # pid -> last state
+    last_tick  = {}       # pid -> last tick
+    preempt_found = False
+
+    for e in parsed["procstatelog"]:
+        pid, state, t = e["pid"], e["state"], e["ticks"]
+
+        if pid in (A, B):
+            prev = last_state.get(pid)
+            last_state[pid] = state
+            last_tick[pid] = t
+
+        if pid == B and state == "running":
+            a_prev = last_state.get(A)         # A 目前狀態
+            a_prev_tick = last_tick.get(A)
+
+            a_prevprev = None
+            for e2 in reversed(parsed["procstatelog"]):
+                if e2["ticks"] > t: 
+                    continue
+                if e2["pid"] == A:
+                    if a_prevprev is None:
+                        a_prevprev = e2["state"]  # A_t 狀態
+                        a_prevprev_tick = e2["ticks"]
+                    else:
+                        a_prevprev2 = e2["state"] # A_t-1 狀態
+                        a_prevprev2_tick = e2["ticks"]
+                        if (a_prevprev == "ready" and a_prevprev2 == "running" 
+                            and abs(a_prevprev_tick - t) <= 1):
+                            preempt_found = True
+                        break
+            if preempt_found:
+                break
+    ...
+    )
+ ```
+
+
+
+
+
+
 ## Contributions
 
 | 工作項目  | 陳俞靜  | 蔡宛秦  |
@@ -1653,8 +1740,8 @@ ____
 | Trace Code Process State Transitions  |   | V | 
 | 實作 Scheduler 主邏輯 | V | V |
 | Aging、Preemption 機制|   | V | 
-| Multilevel Feedback Queue 實作 | V |   |
+| L1/2/3 , Premption 機制 | V |   |
 | 撰寫報告 | Trace Code timer interrupt、 mapping relationship、L1/L2/L3、主邏輯實作 | Trace Code Process State Transitions、主邏輯、Aging、Preemption實作 |
-| Test report |  | V |
-| Bonus |  | aging |
+| Test report | V | V |
+| Bonus | psjf | aging |
 
