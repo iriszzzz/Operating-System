@@ -21,6 +21,8 @@
 
 char buf[BUFSZ];
 
+void test_unknown(void);
+
 //
 // Section with tests that run fairly quickly.  Use -q if you want to
 // run just those.  With -q usertests also runs the ones that take a
@@ -3081,6 +3083,10 @@ main(int argc, char *argv[])
   int quick = 0;
   char *justone = 0;
 
+  if(argc > 1 && strcmp(argv[1], "test_unknown") == 0) {
+    test_unknown();
+    exit(0);
+  }
   if(argc == 2 && strcmp(argv[1], "-q") == 0){
     quick = 1;
   } else if(argc == 2 && strcmp(argv[1], "-c") == 0){
@@ -3099,3 +3105,11 @@ main(int argc, char *argv[])
   printf("ALL TESTS PASSED\n");
   exit(0);
 }
+
+void
+test_unknown(void)
+{
+  // 嘗試一個不存在的 syscall number
+  asm volatile("li a7, 999; ecall");
+}
+

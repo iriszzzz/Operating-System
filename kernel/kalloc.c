@@ -9,6 +9,7 @@
 #include "riscv.h"
 #include "defs.h"
 
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -79,4 +80,18 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+uint64
+freemem(void)
+{
+  struct run *r;
+  uint64 free_bytes = 0;
+
+  acquire(&kmem.lock);
+  for (r = kmem.freelist; r; r = r->next)
+    free_bytes += PGSIZE;
+  release(&kmem.lock);
+
+  return free_bytes;
 }

@@ -5,6 +5,8 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
 
 uint64
 sys_exit(void)
@@ -25,29 +27,6 @@ uint64
 sys_fork(void)
 {
   return fork();
-}
-
-uint64
-sys_priorfork(void)
-{
-  // TODO
-  int priority, statelogenabled;
-  argint(0, &priority);
-  argint(1, &statelogenabled);
-  return priorfork(priority, statelogenabled);
-}
-
-uint64
-sys_proclog(void)
-{
-  // TODO
-  struct proc *p = myproc();
-  int tag;
-  argint(0, &tag);
-  acquire(&p->lock);
-  proclog(p, tag);
-  release(&p->lock);
-  return 0;
 }
 
 uint64
@@ -113,4 +92,36 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  int mask;
+  argint(0, &mask);
+  myproc()->tracemask = mask;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  struct sysinfo info;
+  struct proc *p = myproc();
+  uint64 dst;
+
+  // Get parameters from user space
+  argaddr(0, &dst);
+  // if(argaddr(0, &dst) < 0)
+    // return -1;
+
+  // Call the internal function 
+  info.freemem = freemem();
+  info.nproc = num_proc();
+
+  // Copy to user space
+  if(copyout(p->pagetable, dst, (char *)&info, sizeof(info)) < 0)
+    return -1;
+
+  return 0;
 }

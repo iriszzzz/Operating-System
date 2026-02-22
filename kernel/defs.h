@@ -1,15 +1,9 @@
-enum procstate;
-
 struct buf;
 struct context;
 struct file;
 struct inode;
 struct pipe;
 struct proc;
-struct proclistnode;
-struct proclist;
-struct sortedproclist;
-struct channel;
 struct spinlock;
 struct sleeplock;
 struct stat;
@@ -69,6 +63,7 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+uint64          freemem(void);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -91,7 +86,6 @@ void            printfinit(void);
 int             cpuid(void);
 void            exit(int);
 int             fork(void);
-int             priorfork(int, int);
 int             growproc(int);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
@@ -110,39 +104,13 @@ void            userinit(void);
 int             wait(uint64);
 void            wakeup(void*);
 void            yield(void);
-void            aging(void);
-void            implicityield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
-// for mp2
-void            proclog(struct proc*, int);
-void            procstatelog(struct proc*);
-void            proclistinit(void);
-// proclistnode
-struct proclistnode* allocproclistnode(struct proc *p);
-void            freeproclistnode(struct proclistnode *pn);
-// proclist
-void            initproclist(struct proclist *pl);
-int             sizeproclist(struct proclist *pl);
-struct proclistnode* findproclist(struct proclist *pl, struct proc *p);
-void            removeproclist(struct proclist *pl, struct proclistnode *pn);
-struct proclistnode* popfrontproclist(struct proclist *pl);
-void            pushfrontproclist(struct proclist *pl, struct proclistnode *pn);
-struct proclistnode* popbackproclist(struct proclist *pl);
-void            pushbackproclist(struct proclist *pl, struct proclistnode *pn);
-// sortedproclist
-void            initsortedproclist(struct sortedproclist *spl, int (*cmp)(struct proc*, struct proc*));
-int             sizesortedproclist(struct sortedproclist *spl);
-struct proclistnode* popsortedproclist(struct sortedproclist *spl);
-void            pushsortedproclist(struct sortedproclist *spl, struct proclistnode *pn);
-int             cmptopsortedproclist(struct sortedproclist *spl, struct proc *p);
-// channel
-struct channel* allocchannel(void *chan);
-struct channel* findchannel(void *chan);
-// scheduler managed
-void            pushreadylist(struct proc *pn);
-struct proc*    popreadylist();
+int             num_proc(void);
+
+int             nprocs(void);
+
 
 // swtch.S
 void            swtch(struct context*, struct context*);

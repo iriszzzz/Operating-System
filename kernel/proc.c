@@ -5,7 +5,6 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-#include "mp2-mfqs.h"
 
 struct cpu cpus[NCPU];
 
@@ -26,11 +25,6 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
-
-struct proclistnode proclistnodes[NPROCLISTNODE];
-struct proclist readylist;
-
-struct channel channels[NCHANNEL];
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -140,13 +134,6 @@ found:
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
-
-  ////
-  p->rr_budget = 0;
-  p->est_burst = 0;   // t0 = 0
-  p->psjf_T    = 0;   // T 初始 0
-  p->ticks_waiting = 0; // Added for aging
-
   if(p->pagetable == 0){
     freeproc(p);
     release(&p->lock);
@@ -182,12 +169,6 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
-
-  ////
-  p->rr_budget     = 0;   
-  p->est_burst     = 0;   
-  p->psjf_T        = 0;
-  p->ticks_waiting = 0;   
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -269,8 +250,6 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-  procstatelog(p);
-  pushreadylist(p);
 
   release(&p->lock);
 }
@@ -309,9 +288,6 @@ fork(void)
     return -1;
   }
 
-  np->priority = 149;
-  np->statelogenabled = 0;
-
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -325,6 +301,9 @@ fork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
+
+  //// copy trace mask from parent to child.
+  np->tracemask = p->tracemask;
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
@@ -343,66 +322,7 @@ fork(void)
   release(&wait_lock);
 
   acquire(&np->lock);
-  procstatelog(np); // Initial state log
   np->state = RUNNABLE;
-  procstatelog(np);
-  pushreadylist(np);
-  release(&np->lock);
-
-  return pid;
-}
-
-// Fork but with a priority level for scheduling.
-int
-priorfork(int priority, int statelogenabled)
-{
-  int i, pid;
-  struct proc *np;
-  struct proc *p = myproc();
-
-  // Allocate process.
-  if((np = allocproc()) == 0){
-    return -1;
-  }
-
-  np->priority = priority;
-  np->statelogenabled = statelogenabled;
-
-  // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
-    freeproc(np);
-    release(&np->lock);
-    return -1;
-  }
-  np->sz = p->sz;
-
-  // copy saved user registers.
-  *(np->trapframe) = *(p->trapframe);
-
-  // Cause fork to return 0 in the child.
-  np->trapframe->a0 = 0;
-
-  // increment reference counts on open file descriptors.
-  for(i = 0; i < NOFILE; i++)
-    if(p->ofile[i])
-      np->ofile[i] = filedup(p->ofile[i]);
-  np->cwd = idup(p->cwd);
-
-  safestrcpy(np->name, p->name, sizeof(p->name));
-
-  pid = np->pid;
-
-  release(&np->lock);
-
-  acquire(&wait_lock);
-  np->parent = p;
-  release(&wait_lock);
-
-  acquire(&np->lock);
-  procstatelog(np); // Initial state log
-  np->state = RUNNABLE;
-  procstatelog(np);
-  pushreadylist(np);
   release(&np->lock);
 
   return pid;
@@ -460,7 +380,6 @@ exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
-  procstatelog(p);
 
   release(&wait_lock);
 
@@ -536,28 +455,22 @@ scheduler(void)
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
-    if((p = popreadylist()) == 0) {
-      // no runnable processes, waiting...
-      continue;
-    }
-    acquire(&p->lock);
-    if(p->state != RUNNABLE) {
-      panic("scheduler: p->state != RUNNABLE");
-    }
-    // Switch to chosen process.  It is the process's job
-    // to release its lock and then reacquire it
-    // before jumping back to us.
-    p->startrunningticks = ticks;
-    p->state = RUNNING;
-    c->proc = p;
-    procstatelog(p);
-    swtch(&c->context, &p->context);
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        // Switch to chosen process.  It is the process's job
+        // to release its lock and then reacquire it
+        // before jumping back to us.
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
 
-    // Process is done running for now.
-    // It should have changed its p->state before coming back.
-    c->proc = 0;
-
-    release(&p->lock);
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+      }
+      release(&p->lock);
+    }
   }
 }
 
@@ -595,111 +508,8 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
-  procstatelog(p);
-  pushreadylist(p);
   sched();
   release(&p->lock);
-}
-
-// Aging
-// void
-// aging(void)
-// {
-//   // Currently not implemented
-// }
-// void
-// aging(void)
-// {
-//   struct proc *p;
-//   for(p = proc; p < &proc[NPROC]; p++){
-//     acquire(&p->lock);
-//     if(p->state == RUNNABLE){
-//       p->ticks_waiting++;
-//       if(p->ticks_waiting >= 20){
-//         p->ticks_waiting = 0;
-//         if(p->priority < 149){
-//           p->priority++;
-//           mfqs_update_queue(p);  // move to correct queue
-//         }
-//       }
-//     }
-//     release(&p->lock);
-//   }
-// }
-void aging(void) // Add
-{
-  struct proc *p;
-  for (p = proc; p < &proc[NPROC]; p++) {
-    acquire(&p->lock);
-    if (p->state == RUNNABLE) {
-      p->ticks_waiting++;
-      if (p->ticks_waiting >= 20) {
-        p->ticks_waiting = 0;
-        if (p->priority < 149) {
-          int old_level = level_of(p);
-          mfqs_remove(p);         // remove from old queue BEFORE changing priority
-          p->priority++;
-          int new_level = level_of(p);
-          if (new_level != old_level) {
-            mfqs_enqueue(p);      // re-enqueue into new queue
-          } else {
-            mfqs_enqueue(p);      // re-enqueue into same queue
-          }
-        }
-      }
-    }
-    release(&p->lock);
-  }
-}
-
-
-
-
-// Implicit yield is called on timer interrupt
-void
-implicityield(void)
-{
-  struct proc *p = myproc();
-  // if(ticks - p->startrunningticks >= 1) {
-  //   // yield round robin scheduling
-  //   // actually ticks - p->startrunningticks should be 1
-  //   yield();
-  if (!p) return;
-  if (p->state != RUNNING) return;
-  
-  //// L1 - PSJF累加ticks
-  if (p->priority >= 100){
-    p->psjf_T++;
-  }
-
-  //// L3 - RR
-  mfqs_rr_on_tick(p);
-  if (mfqs_rr_timeslice_up(p)) {
-    yield();  // 回 ready；在 mfqs_enqueue() 會重設 rr_budget 並放回 L3 尾端
-  }
-
-  //// preempt condition
-  if (p->priority < 100 && mfqs_l1_nonempty()) {
-    yield();
-    return;
-  }
-  if (p->priority < 50 && mfqs_l2_nonempty()) {
-    yield();
-    return;
-  }
-  if (p->priority >= 100 && p->priority < 150) {
-//    if (ticks%4 == 0) {
-    //      printf("p->est_burst: %d\n", p->est_burst);
-    //      printf("mfqs_l1_top->est_burst: %d\n", mfqs_l1_top_estburst());
-    //      printf("p->psjf_T: %d\n", p->psjf_T);
-    //    }
-    if (mfqs_l1_top_preempt(p)) {
-      //printf("L1 preempting process %d\n", p->pid);
-      yield();
-    }
-  }
-
-  aging(); // Add, Aging check
 }
 
 // A fork child's very first scheduling by scheduler()
@@ -729,8 +539,6 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  struct channel *cn;
-  struct proclistnode *pn;
   
   // Must acquire p->lock in order to
   // change p->state and then call sched.
@@ -738,27 +546,13 @@ sleep(void *chan, struct spinlock *lk)
   // guaranteed that we won't miss any wakeup
   // (wakeup locks p->lock),
   // so it's okay to release lk.
-  // mp2: also need to acquire channel lock
 
   acquire(&p->lock);  //DOC: sleeplock1
-  if((cn = findchannel(chan)) == 0 && (cn = allocchannel(chan)) == 0) {
-    panic("sleep: allocchannel");
-  }
   release(lk);
-
-  //// Running→Waiting，est_burst才更新
-  mfqs_update_est_burst(p);
 
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
-  procstatelog(p);
-
-  if((pn = allocproclistnode(p)) == 0) {
-    panic("sleep: allocproclistnode");
-  }
-  pushbackproclist(&cn->pl, pn);
-  release(&cn->lock);
 
   sched();
 
@@ -776,35 +570,16 @@ void
 wakeup(void *chan)
 {
   struct proc *p;
-  struct channel *cn;
-  struct proclistnode *pn;
 
-  if((cn = findchannel(chan)) == 0) {
-    // channel not initialized
-    return;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p != myproc()){
+      acquire(&p->lock);
+      if(p->state == SLEEPING && p->chan == chan) {
+        p->state = RUNNABLE;
+      }
+      release(&p->lock);
+    }
   }
-  while((pn = popfrontproclist(&cn->pl)) != 0){
-    p = pn->p;
-    freeproclistnode(pn);
-    acquire(&p->lock);
-    // Assertions
-    if(p == myproc()) {
-      panic("wakeup: wakeup self");
-    }
-    if(p->state != SLEEPING) {
-      panic("wakeup: not sleeping");
-    }
-    if(p->chan != chan) {
-      panic("wakeup: wrong channel");
-    }
-    p->state = RUNNABLE;
-    procstatelog(p);
-    pushreadylist(p);
-    release(&p->lock);
-  }
-  // free channel since it is empty
-  cn->used = 0;
-  release(&cn->lock);
 }
 
 // Kill the process with the given pid.
@@ -814,8 +589,6 @@ int
 kill(int pid)
 {
   struct proc *p;
-  struct channel *cn;
-  struct proclistnode *pn;
 
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
@@ -823,19 +596,7 @@ kill(int pid)
       p->killed = 1;
       if(p->state == SLEEPING){
         // Wake process from sleep().
-        if((cn = findchannel(p->chan)) == 0) {
-          panic("kill findchannel");
-        }
-        if((pn = findproclist(&cn->pl, p)) == 0) {
-          panic("kill: findproclist");
-        }
         p->state = RUNNABLE;
-        procstatelog(p);
-        // remove from channel and push to readylist
-        removeproclist(&cn->pl, pn);
-        freeproclistnode(pn);
-        pushreadylist(p);
-        release(&cn->lock);
       }
       release(&p->lock);
       return 0;
@@ -924,373 +685,18 @@ procdump(void)
   }
 }
 
-// for mp2
-char*
-procstate2str(enum procstate state)
-{
-  switch(state) {
-    case USED:     return "new";
-    case SLEEPING: return "waiting";
-    case RUNNABLE: return "ready";
-    case RUNNING:  return "running";
-    case UNUSED:   return "exit";
-    case ZOMBIE:   return "exit";
-    default:       return "unknown";
-  }
-}
-
-// Log the state of the current process with a given index.
-void
-proclog(struct proc* p, int tag)
-{
-  printf("proclog: pid=%d, ticks=%d, tag=%d, state=\"%s\", priority=%d\n",
-          p->pid, ticks, tag, procstate2str(p->state), p->priority);
-}
-
-// Log a process state change before it happens
-void
-procstatelog(struct proc *p)
-{
-  if(!p->statelogenabled) return; // process state logging of this process is disabled
-  printf("procstatelog: pid=%d, ticks=%d, state=\"%s\", priority=%d\n",
-          p->pid, ticks, procstate2str(p->state), p->priority);
-}
-
-// initialize process list related data structures.
-void
-proclistinit(void)
-{
-  int i;
-  // initialize proclistnodes.
-  for(i = 0; i < NPROCLISTNODE; i++){
-    proclistnodes[i].used = 0;
-    initlock(&proclistnodes[i].lock, "proclistnode");
-  }
-  // initialize readylist.
-  initproclist(&readylist);
-
-  ////
-  mfqs_init();
-  
-  // initialize channels.
-  for(i = 0; i < NCHANNEL; i++){
-    channels[i].used = 0;
-    initproclist(&channels[i].pl);
-    initlock(&channels[i].lock, "channel");
-  }
-}
-
-// allocate a proclistnode and return it.
-struct proclistnode*
-allocproclistnode(struct proc *p)
-{
-  int i;
-  struct proclistnode *pn;
-  pn = 0;
-  for(i = 0; i < NPROCLISTNODE && pn == 0; i++){
-    acquire(&proclistnodes[i].lock);
-    if(proclistnodes[i].used == 0){
-      proclistnodes[i].used = 1;
-      proclistnodes[i].p = p;
-      proclistnodes[i].next = 0;
-      proclistnodes[i].prev = 0;
-      pn = &proclistnodes[i];
-    }
-    release(&proclistnodes[i].lock);
-  }
-  return pn;
-}
-
-// free a proclistnode.
-void
-freeproclistnode(struct proclistnode *pn)
-{
-  acquire(&pn->lock);
-  pn->used = 0;
-  release(&pn->lock);
-}
-
-// initialize a proclist.
-void
-initproclist(struct proclist *pl)
-{
-  int i;
-  pl->size = 0;
-  for(i = 0; i < 2; i++){
-    pl->buf[i].used = 1;
-    pl->buf[i].p = 0;
-    initlock(&pl->buf[i].lock, "proclistsentinel");
-  }
-  pl->head = &pl->buf[0];
-  pl->tail = &pl->buf[1];
-  pl->head->next = pl->tail;
-  pl->head->prev = 0;
-  pl->tail->next = 0;
-  pl->tail->prev = pl->head;
-  initlock(&pl->lock, "proclist");
-}
-
-// get the size of a proclist.
 int
-sizeproclist(struct proclist *pl)
+num_proc(void)
 {
-  int size;
-  acquire(&pl->lock);
-  size = pl->size;
-  release(&pl->lock);
-  return size;
-}
-
-// find a proclistnode in a proclist.
-struct proclistnode*
-findproclist(struct proclist *pl, struct proc *p)
-{
-  struct proclistnode *tmp, *pn;
-  acquire(&pl->lock);
-  pn = 0;
-  for(tmp = pl->head->next; tmp != pl->tail && pn == 0; tmp = tmp->next){
-    if(tmp->p == p){
-      pn = tmp;
-    }
-  }
-  release(&pl->lock);
-  return pn;
-}
-
-// remove a proclistnode from a proclist.
-void
-removeproclist(struct proclist *pl, struct proclistnode *pn)
-{
-  acquire(&pl->lock);
-  pl->size--;
-  pn->prev->next = pn->next;
-  pn->next->prev = pn->prev;
-  release(&pl->lock);
-}
-
-// pop and return the first element of a proclist, or 0 if the proclist is empty.
-struct proclistnode*
-popfrontproclist(struct proclist *pl)
-{
-  struct proclistnode *pn;
-  acquire(&pl->lock);
-  if(pl->size == 0){
-    release(&pl->lock);
-    return 0;
-  }
-  pl->size--;
-  pn = pl->head->next;
-  pl->head->next = pn->next;
-  pn->next->prev = pl->head;
-  release(&pl->lock);
-  return pn;
-}
-
-// push an element to the front of a proclist.
-void
-pushfrontproclist(struct proclist *pl, struct proclistnode *pn)
-{
-  acquire(&pl->lock);
-  pl->size++;
-  pn->next = pl->head->next;
-  pn->prev = pl->head;
-  pl->head->next->prev = pn;
-  pl->head->next = pn;
-  release(&pl->lock);
-}
-
-// pop and return the last element of a proclist, or 0 if the proclist is empty.
-struct proclistnode*
-popbackproclist(struct proclist *pl)
-{
-  struct proclistnode *pn;
-  acquire(&pl->lock);
-  if(pl->size == 0){
-    release(&pl->lock);
-    return 0;
-  }
-  pl->size--;
-  pn = pl->tail->prev;
-  pl->tail->prev = pn->prev;
-  pn->prev->next = pl->tail;
-  release(&pl->lock);
-  return pn;
-}
-
-
-// push an element to the back of a proclist.
-void
-pushbackproclist(struct proclist *pl, struct proclistnode *pn)
-{
-  acquire(&pl->lock);
-  pl->size++;
-  pn->next = pl->tail;
-  pn->prev = pl->tail->prev;
-  pl->tail->prev->next = pn;
-  pl->tail->prev = pn;
-  release(&pl->lock);
-}
-
-// initialize a sortedproclist.
-void
-initsortedproclist(struct sortedproclist *pl, int (*cmp)(struct proc *, struct proc *))
-{
-  int i;
-  pl->size = 0;
-  for(i = 0; i < 2; i++){
-    pl->buf[i].used = 1;
-    pl->buf[i].p = 0;
-    initlock(&pl->buf[i].lock, "sortedproclistsentinel");
-  }
-  pl->head = &pl->buf[0];
-  pl->tail = &pl->buf[1];
-  pl->head->next = pl->tail;
-  pl->head->prev = 0;
-  pl->tail->next = 0;
-  pl->tail->prev = pl->head;
-  pl->cmp = cmp;
-  initlock(&pl->lock, "sortedproclist");
-}
-
-// get the size of a sortedproclist.
-int
-sizesortedproclist(struct sortedproclist *spl)
-{
-  int size;
-  acquire(&spl->lock);
-  size = spl->size;
-  release(&spl->lock);
-  return size;
-}
-
-// pop and return the first element of a sortedproclist
-// following the comparison function, or 0 if the sortedproclist is empty.
-struct proclistnode*
-popsortedproclist(struct sortedproclist *pl)
-{
-  struct proclistnode *pn;
-  acquire(&pl->lock);
-  if(pl->size == 0){
-    release(&pl->lock);
-    return 0;
-  }
-  pl->size--;
-  pn = pl->head->next;
-  pl->head->next = pn->next;
-  pn->next->prev = pl->head;
-  release(&pl->lock);
-  return pn;
-}
-
-// push an element to a sortedproclist following the comparison function.
-void
-pushsortedproclist(struct sortedproclist *pl, struct proclistnode *pn)
-{
-  struct proclistnode *pn1;
-  acquire(&pl->lock);
-  pl->size++;
-  for(pn1 = pl->head->next; pn1 != pl->tail; pn1 = pn1->next){
-    if(pl->cmp(pn->p, pn1->p) > 0){
-      break;
-    }
-  }
-  pn->next = pn1;
-  pn->prev = pn1->prev;
-  pn1->prev->next = pn;
-  pn1->prev = pn;
-  release(&pl->lock);
-}
-
-// compare a process with the first element of a sortedproclist
-int
-cmptopsortedproclist(struct sortedproclist *spl, struct proc *p)
-{
-  struct proclistnode *pn;
-  int ret;
-  acquire(&spl->lock);
-  if(spl->size == 0){
-    release(&spl->lock);
-    return 1; // empty list, return 1 to indicate that p is greater than the first element
-  }
-  pn = spl->head->next;
-  ret = spl->cmp(p, pn->p);
-  release(&spl->lock);
-  return ret;
-}
-
-// allocate a channel, lock and return if available,
-// or return 0 if no entry is left.
-struct channel*
-allocchannel(void *chan)
-{
-  int i;
-  struct channel *cn;
-  cn = 0;
-  for(i = 0; i < NCHANNEL && cn == 0; i++){
-    acquire(&channels[i].lock);
-    if(channels[i].used == 0){
-      channels[i].used = 1;
-      channels[i].chan = chan;
-      cn = &channels[i];
-    }else{
-      release(&channels[i].lock);
-    }
-  }
-  return cn;
-}
-
-// find a channel, lock and return if found,
-// or return 0 if not found.
-struct channel*
-findchannel(void *chan)
-{
-  int i;
-  struct channel *cn;
-  cn = 0;
-  for(i = 0; i < NCHANNEL && cn == 0; i++){
-    acquire(&channels[i].lock);
-    if(channels[i].used == 1 && channels[i].chan == chan){
-      cn = &channels[i];
-    }else{
-      release(&channels[i].lock);
-    }
-  }
-  return cn;
-}
-
-// // scheduler managed, push to ready list
-// void
-// pushreadylist(struct proc *p)
-// {
-//   struct proclistnode *pn;
-//   if((pn = allocproclistnode(p)) == 0) {
-//     panic("pushreadylist: allocproclistnode");
-//   }
-//   pushbackproclist(&readylist, pn);
-// }
-
-// // scheduler managed, pop from ready list
-// struct proc*
-// popreadylist()
-// {
-//   struct proc *p;
-//   struct proclistnode *pn;
-//   if((pn = popfrontproclist(&readylist)) == 0) {
-//     return 0; // no runnable processes
-//   }
-//   p = pn->p;
-//   freeproclistnode(pn);
-//   return p;
-// }
-////
-void
-pushreadylist(struct proc *p){
-  mfqs_enqueue(p);
-}
-struct proc*
-popreadylist(){
   struct proc *p;
-  p = mfqs_dequeue();
-  if(p == 0) return 0;
-  return p;
+  int count = 0;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED)
+      count++;
+    release(&p->lock);
+  }
+
+  return count;
 }

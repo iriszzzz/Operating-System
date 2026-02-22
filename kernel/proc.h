@@ -96,8 +96,6 @@ struct proc {
   struct proc *parent;         // Parent process
 
   // these are private to the process, so p->lock need not be held.
-  int priority;                // Priority of the process
-  int statelogenabled;         // if 1, procstatelog is enabled for this process
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
@@ -107,46 +105,5 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 
-  // scheduler related
-  int startrunningticks;       // ticks when the process started running
-
-  //// added for mp2
-  int rr_budget;     // L3
-  int est_burst;     // L1 Ti, est 初始值
-  int psjf_T;         // L1 T, 真實值
-  int queue_level;       // Added, 0: L3, 1: L2, 2: L1
-  int ticks_waiting;     // Added, For aging: how long in ready queue
-};
-
-// for mp2
-struct proclistnode {
-  int used;
-  struct proc *p;
-  struct proclistnode *next;
-  struct proclistnode *prev;
-  struct spinlock lock;
-};
-
-struct proclist {
-  int size;
-  struct proclistnode buf[2]; // head and tail sentinel nodes
-  struct proclistnode *head;
-  struct proclistnode *tail;
-  struct spinlock lock;
-};
-
-struct sortedproclist {
-  int size;
-  struct proclistnode buf[2]; // head and tail sentinel nodes
-  struct proclistnode *head;
-  struct proclistnode *tail;
-  int (*cmp)(struct proc *, struct proc *);
-  struct spinlock lock;
-};
-
-struct channel {
-  int used;
-  void *chan;
-  struct proclist pl;
-  struct spinlock lock;
+  int tracemask;               // Trace mask
 };

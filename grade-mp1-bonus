@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+
+import re
+from gradelib import *
+
+r = Runner(save("bonus_test.out"))
+
+@test(0, "bonus")
+def test_bonus():
+    # just a simple sanity check, will be graded manually
+    check_answers("grade-mp1-bonus")
+
+@test(1, "trace fork-exit-wait")
+def test_trace_fork_exit_wait():
+    r.run_qemu(shell_script([
+        'trace 14 usertests fork'   # 14 = (1<<SYS_fork) | (1<<SYS_exit) | (1<<SYS_wait)
+    ]))
+    r.match('^\\d+: syscall fork -> \\d+')
+    r.match('^\\d+: syscall exit -> 0')
+    r.match('^\\d+: syscall wait -> \\d+')
+
+@test(1, "unknown syscall")
+def test_unknown_syscall():
+    r.run_qemu(shell_script([
+        'usertests test_unknown'
+    ]))
+    r.match('.*unknown sys call 999')
+
+
+run_tests()

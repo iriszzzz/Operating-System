@@ -145,15 +145,3 @@ memcpy(void *dst, const void *src, uint n)
 {
   return memmove(dst, src, n);
 }
-
-void
-simulate_work(int iterations) {
-  volatile int result = 0;
-  int i, j;
-  for (i = 0; i < iterations; i++) {
-    for (j = 0; j < 1000; j++) {
-      result += (i * j) / (j + 1) + (i % (j + 1));
-    }
-  }
-  (void)result;
-}
