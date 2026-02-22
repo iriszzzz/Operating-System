@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+
+import re
+from gradelib import *
+
+r = Runner(save("xv6.out"))
+
+@test(0, "Testing boundary file indexing")
+def test_boundaryfile():
+    r.run_qemu(shell_script([
+        'boundaryfile'
+    ]), timeout=60)
+
+@test(7, "Boundary indexing: ok", parent=test_boundaryfile)
+def test_boundaryfile_ok():
+    r.match("^boundaryfile: ok$")
+
+run_tests()
