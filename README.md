@@ -1,4 +1,4 @@
-# Operating Systems 
+# Operating System
 
 This repository contains my course projects and study notes for the Operating Systems course at National Tsing Hua University (NTHU). It includes hands-on implementations based on the xv6 RISC-V kernel and concurrent programming with Pthreads.
 
