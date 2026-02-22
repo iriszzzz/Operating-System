@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+
+import re
+from copy import deepcopy
+from gradelib import *
+
+workload = None
+r = Runner(save("xv6.out"))
+
+
+def parse(outputs: str):
+    """
+    Parse the output of the xv6 scheduler tests.
+    """
+    results = {
+        "pid": {},
+        "ticks": {},
+        "procstatelog": [],
+    }
+    lines = outputs.splitlines()
+    for line in lines:
+        match = re.search(
+            r"procstatelog: pid=(\d+), ticks=(\d+), state=\"(\w+)\", priority=(\d+)",
+            line,
+        )
+        if match:
+            pid = int(match.group(1))
+            ticks = int(match.group(2))
+            state = match.group(3)
+            priority = int(match.group(4))
+            data = {
+                "pid": pid,
+                "ticks": ticks,
+                "state": state,
+                "priority": priority,
+            }
+            results["procstatelog"].append(data)
+            if pid not in results["pid"]:
+                results["pid"][pid] = {"procstatelog": []}
+            results["pid"][pid]["procstatelog"].append(data)
+            if ticks not in results["ticks"]:
+                results["ticks"][ticks] = {"procstatelog": []}
+            results["ticks"][ticks]["procstatelog"].append(data)
+    return results
+
+
+@test(0, "benchmark")
+def test_benchmark():
+    r.run_qemu(shell_script(["mp2-benchmark"]))
+    outputs = r.qemu.output
+    match = re.search(
+        r"proclog: pid=(\d+), ticks=(\d+), tag=(\d+), state=\"(\w+)\", priority=(\d+)",
+        outputs,
+    )
+    global workload
+    if match:
+        workload = int(match.group(3))
+    else:
+        workload = None
+
+
+@test(10, "psjf", parent=test_benchmark)
+def test_psjf():
+    r.run_qemu(shell_script([f"mp2-psjf {workload}"]))
+    outputs = r.qemu.output
+    parsed = parse(outputs)
+    # Check the processes were created
+    assert len(parsed["pid"]) == 3, "Expected 3 processes to be created."
+    # Check new, ready, running, waiting, and exit states exists
+    for pid, data in parsed["pid"].items():
+        states = {entry["state"] for entry in data["procstatelog"]}
+        for state in ["new", "ready", "running", "waiting", "exit"]:
+            assert (
+                state in states
+            ), f"Process {pid} did not have a '{state}' state."
+
+    # Build a list of process IDs by state
+    state_pid_list = {
+        "new": [],
+        "ready": [],
+        "running": [],
+        "waiting": [],
+        "exit": [],
+    }
+    for entry in parsed["procstatelog"]:
+        pid = entry["pid"]
+        state = entry["state"]
+        if state in state_pid_list:
+            state_pid_list[state].append(pid)
+
+    expected_running_prefix = [4, 5, 6]
+    expected_waiting = [4, 5, 6, 6, 5, 4]
+    expected_exit = [6, 5, 4]
+    assert (
+        state_pid_list["running"][: len(expected_running_prefix)]
+        == expected_running_prefix
+    ), (
+        f"Expected running process order prefix to be {expected_running_prefix}, "
+        f"but got {state_pid_list['running'][: len(expected_running_prefix)]}."
+    )
+    assert state_pid_list["waiting"] == expected_waiting, (
+        f"Expected waiting process order to be {expected_waiting}, "
+        f"but got {state_pid_list['waiting']}."
+    )
+    assert (
+        state_pid_list["exit"] == expected_exit
+    ), f"Expected exit process order to be {expected_exit}, but got {state_pid_list['exit']}."
+
+
+@test(10, "priority", parent=test_benchmark)
+def test_priority():
+    r.run_qemu(shell_script([f"mp2-priority {workload}"]))
+    outputs = r.qemu.output
+    parsed = parse(outputs)
+    # Check three processes were created
+    assert len(parsed["pid"]) == 3, "Expected 3 processes to be created."
+    # Check new, ready, running, and exit states exists
+    for pid, data in parsed["pid"].items():
+        states = {entry["state"] for entry in data["procstatelog"]}
+        for state in ["new", "ready", "running", "exit"]:
+            assert (
+                state in states
+            ), f"Process {pid} did not have a '{state}' state."
+    # Check per process that yielding happens when running for 10 ticks
+    processes = {}
+    for pid in parsed["pid"]:
+        processes[pid] = {
+            "new": None,
+            "running": None,
+            "ready": None,
+            "exit": None,
+        }
+    for entry in parsed["procstatelog"]:
+        pid = entry["pid"]
+        ticks = entry["ticks"]
+        if entry["priority"] >= 100:
+            # Only check processes with 50 <= priority < 10
+            break
+        if entry["state"] in ["new", "running", "ready", "exit"]:
+            if processes[pid][entry["state"]] is None:
+                processes[pid][entry["state"]] = ticks
+            else:
+                assert (
+                    False
+                ), f"Process {pid} at ticks {ticks} got repeated {entry['state']} state."
+    for pid in parsed["pid"]:
+        for state in ["new", "running", "ready", "exit"]:
+            assert (
+                processes[pid][state] is not None
+            ), f"Process {pid} did not have a '{state}' state."
+    # Check order of running and exit states are correct
+    pids = list(processes.keys())
+    pids.sort(reverse=True)
+    running_order = [(processes[pid]["running"], pid) for pid in processes]
+    running_order.sort()
+    exit_order = [(processes[pid]["exit"], pid) for pid in processes]
+    exit_order.sort()
+    for i in range(len(pids)):
+        assert (
+            pids[i] == running_order[i][1]
+        ), f"Wrong order of running states: expected {pids[i]}, got {running_order[i][1]}."
+        assert (
+            pids[i] == exit_order[i][1]
+        ), f"Wrong order of exit states: expected {pids[i]}, got {exit_order[i][1]}."
+
+
+@test(10, "rr", parent=test_benchmark)
+def test_rr():
+    r.run_qemu(shell_script([f"mp2-rr {workload}"]))
+    outputs = r.qemu.output
+    parsed = parse(outputs)
+    # Check three processes were created
+    assert len(parsed["pid"]) == 3, "Expected 3 processes to be created."
+    # Check new, ready, running, and exit states exists
+    for pid, data in parsed["pid"].items():
+        states = {entry["state"] for entry in data["procstatelog"]}
+        for state in ["new", "ready", "running", "exit"]:
+            assert (
+                state in states
+            ), f"Process {pid} did not have a '{state}' state."
+    # Check per process that yielding happens when running for 10 ticks
+    start = {}
+    for pid in parsed["pid"]:
+        start[pid] = None
+    for entry in parsed["procstatelog"]:
+        pid = entry["pid"]
+        ticks = entry["ticks"]
+        if entry["priority"] >= 50:
+            # Only check processes with 0 <= priority < 50
+            break
+        if entry["state"] == "running":
+            if start[pid] is None:
+                start[pid] = entry["ticks"]
+            else:
+                assert False, f"Process {pid} got repeated running state."
+        elif entry["state"] == "ready":
+            if start[pid] is not None:
+                assert (
+                    entry["ticks"] - start[pid] == 10
+                ), f"Process {pid} at ticks {ticks} did not yield at 10 ticks."
+                start[pid] = None
+        else:
+            if start[pid] is not None:
+                assert (
+                    entry["ticks"] - start[pid] <= 10
+                ), f"Process {pid} at ticks {ticks} ran for more than 10 ticks."
+                start[pid] = None
+
+
+@test(30, "aging", parent=test_benchmark)
+def test_aging():
+    r.run_qemu(shell_script([f"mp2-aging {workload}"]))
+    outputs = r.qemu.output
+    parsed = parse(outputs)
+    # Parameters for the aging test
+    bursts = {4: 3, 5: 3, 6: 3, 7: 2}
+    # Check the processes were created
+    assert len(parsed["pid"]) == len(
+        bursts
+    ), "Expected 4 processes to be created."
+    # Check new, ready, running, waiting, and exit states exists
+    for pid, data in parsed["pid"].items():
+        states = {entry["state"] for entry in data["procstatelog"]}
+        for state in ["new", "ready", "running", "waiting", "exit"]:
+            assert (
+                state in states
+            ), f"Process {pid} did not have a '{state}' state."
+
+    init_state = {
+        "new_cnt": 0,
+        "ready_cnt": 0,
+        "running_cnt": 0,
+        "waiting_cnt": 0,
+        "exit_cnt": 0,
+        "running_to_ready_cnt": 0,
+        "state": None,
+    }
+    prev_states = {pid: init_state.copy() for pid in parsed["pid"]}
+    curr_states = {pid: init_state.copy() for pid in parsed["pid"]}
+    for entry in parsed["procstatelog"]:
+        pid = entry["pid"]
+        ticks = entry["ticks"]
+        state = entry["state"]
+
+        # Update current state
+        curr_states[pid]["state"] = state
+        if state in ["new", "ready", "running", "waiting", "exit"]:
+            curr_states[pid][state + "_cnt"] += 1
+        if prev_states[pid]["state"] == "running" and state == "ready":
+            curr_states[pid]["running_to_ready_cnt"] += 1
+
+        # Process 4, 5, 6 should not be preempted in this test
+        for i in [4, 5, 6]:
+            assert (
+                curr_states[i]["running_to_ready_cnt"] == 0
+            ), f"Process {i} should not be preempted. Ticks {ticks}."
+        for i in [4, 5, 6]:
+            if curr_states[i]["running_cnt"] > 0:
+                assert (
+                    curr_states[7]["waiting_cnt"] > 0
+                ), f"Process {i} should not run while until process 7 waits after its first burst. Ticks {ticks}."
+        for i in [4, 5]:
+            if curr_states[i]["running_cnt"] > 0:
+                assert (
+                    curr_states[6]["exit_cnt"] == 1
+                ), f"Process {i} should not run until process 6 exits. Ticks {ticks}."
+                assert (
+                    curr_states[7]["exit_cnt"] == 1
+                ), f"Process {i} should not run until process 7 exits. Ticks {ticks}."
+        # Process 6 always preempts process 7
+        if (
+            curr_states[7]["waiting_cnt"] > 0
+            and curr_states[6]["running_cnt"] > prev_states[6]["running_cnt"]
+        ):
+            assert (
+                curr_states[7]["running_cnt"] - 1
+                <= curr_states[6]["running_cnt"]
+            ), f"Process 6 should preempt process 7. Ticks {ticks}."
+        # Process 4 is executed first, then process 5, then 4 again, then 5 again
+        if (
+            curr_states[4]["running_cnt"] == 1
+            and prev_states[4]["running_cnt"] == 0
+        ):
+            assert (
+                curr_states[5]["running_cnt"] == 0
+            ), f"Process 4 should start before process 5. Ticks {ticks}."
+
+        # Update previous states to current states
+        prev_states = deepcopy(curr_states)
+
+    # Check the final states of the processes
+    for pid in [4, 5, 6]:
+        assert (
+            curr_states[pid]["running_cnt"] == bursts[pid]
+        ), f"Process {pid} should have run exactly {bursts[pid]} times before exiting."
+    for pid in [4, 5, 6, 7]:
+        assert (
+            curr_states[pid]["waiting_cnt"] == bursts[pid] - 1
+        ), f"Process {pid} should have slept {bursts[pid] - 1} times before exiting."
+        assert (
+            curr_states[pid]["exit_cnt"] == 1
+        ), f"Process {pid} should have exit exactly 1 time."
+
+
+def test_preempt_check(outputs: str):
+    parsed = parse(outputs)
+    init_state = {
+        "new_cnt": 0,
+        "ready_cnt": 0,
+        "running_cnt": 0,
+        "waiting_cnt": 0,
+        "exit_cnt": 0,
+        "running_to_ready_cnt": 0,
+        "state": None,
+    }
+    prev_states = {pid: init_state.copy() for pid in parsed["pid"]}
+    curr_states = {pid: init_state.copy() for pid in parsed["pid"]}
+    for entry in parsed["procstatelog"]:
+        pid = entry["pid"]
+        ticks = entry["ticks"]
+        state = entry["state"]
+
+        # Update current state
+        curr_states[pid]["state"] = state
+        if state in ["new", "ready", "running", "waiting", "exit"]:
+            curr_states[pid][state + "_cnt"] += 1
+        if prev_states[pid]["state"] == "running" and state == "ready":
+            curr_states[pid]["running_to_ready_cnt"] += 1
+
+        if curr_states[4]["running_cnt"] > prev_states[4]["running_cnt"]:
+            assert curr_states[5]["exit_cnt"] == 1 or (
+                curr_states[5]["new_cnt"] == 0
+                and curr_states[5]["running_cnt"] == 0
+            ), f"Process 5 should not be created before process 4 runs, or process 5 has exit. Ticks {ticks}."
+        if (
+            curr_states[5]["running_cnt"] > prev_states[5]["running_cnt"]
+            or curr_states[5]["exit_cnt"] > prev_states[5]["exit_cnt"]
+        ):
+            assert (
+                curr_states[4]["running_to_ready_cnt"] > 0
+            ), f"Process 4 should be preempted by process 5. Ticks {ticks}."
+            assert (
+                curr_states[4]["exit_cnt"] == 0
+            ), f"Process 4 should not exit before process 5 runs. Ticks {ticks}."
+
+        # Update previous states to current states
+        prev_states = deepcopy(curr_states)
+    # Check the final states of the processes
+    for state in ["new", "running", "exit"]:
+        assert (
+            curr_states[5][f"{state}_cnt"] == 1
+        ), f"Process 5 should have been in {state} state exactly once."
+    for state in ["new", "exit"]:
+        assert (
+            curr_states[4][f"{state}_cnt"] == 1
+        ), f"Process 4 should have been in {state} state exactly once."
+
+
+@test(10, "preempt-a", parent=test_benchmark)
+def test_preempt_a():
+    r.run_qemu(shell_script([f"mp2-preempt-a {workload}"]))
+    test_preempt_check(r.qemu.output)
+
+
+@test(10, "preempt-b", parent=test_benchmark)
+def test_preempt_b():
+    r.run_qemu(shell_script([f"mp2-preempt-b {workload}"]))
+    test_preempt_check(r.qemu.output)
+
+
+@test(10, "preempt-c", parent=test_benchmark)
+def test_preempt_c():
+    r.run_qemu(shell_script([f"mp2-preempt-c {workload}"]))
+    test_preempt_check(r.qemu.output)
+
+
+@test(0, "report")
+def test_report():
+    # just a simple sanity check, will be graded manually
+    check_answers("mp2-report.md")
+
+
+@test(0, "bonus")
+def test_bonus():
+    # just a simple sanity check, will be graded manually
+    check_answers("grade-mp2-bonus")
+
+
+run_tests()
